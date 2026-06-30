@@ -1,0 +1,1 @@
+preload: path.join(__dirname, 'preload.js')

@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <SpectreMitigation>false</SpectreMitigation>
+    <SpectreMitigationRequired>false</SpectreMitigationRequired>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)' == 'x64' or '$(Platform)' == 'AMD64'">
+    <LibraryPath>$(LibraryPath);C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\lib\x64;C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\lib\x64</LibraryPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)' == 'Win32' or '$(Platform)' == 'x86'">
+    <LibraryPath>$(LibraryPath);C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\lib\x86;C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\lib\x86</LibraryPath>
+  </PropertyGroup>
+</Project>

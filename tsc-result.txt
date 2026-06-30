@@ -1,0 +1,10 @@
+npx.cmd : npm warn Unknown env config "devdir". This will stop working in the next major version of npm. See `npm help 
+npmrc` for supported config options.
+At C:\Users\DijIw\AppData\Local\Temp\ps-script-1530c0bd-3ab9-4a04-8a44-2a73f8e63620.ps1:113 char:30
++ ... NEXA IDE'; & 'C:\Program Files\nodejs\npx.cmd' tsc --noEmit 2>&1 | O ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm warn Unknow...config options.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+'"node"' is not recognized as an internal or external command,
+operable program or batch file.

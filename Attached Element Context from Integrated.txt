@@ -1,0 +1,129 @@
+Attached Element Context from Integrated Browser
+
+Element: div.flex.flex-col.items-center.mb-7
+
+URL: http://localhost:5173/
+
+HTML Path: div#root > div.relative.flex.items-center.justify-center.h-screen.overflow-hidden > div.relative.z-10.w-full.px-6.flex.justify-center > div.glass-card.w-full.max-w-[420px].p-8 > div.flex.flex-col.items-center.mb-7
+
+Outer HTML:
+```html
+<div class="flex flex-col items-center mb-7"><svg width="48" height="48" viewBox="0 0 100 100" fill="none"><defs><linearGradient id="login-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#a78bfa"></stop><stop offset="50%" stop-color="#818cf8"></stop><stop offset="100%" stop-color="#60a5fa"></stop></linearGradient><filter id="login-glow"><feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur><feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge></filter></defs><polygon points="50,4 93,27 93,73 50,96 7,73 7,27" fill="url(#login-grad)" filter="url(#login-glow)"></polygon><text x="50" y="64" text-anchor="middle" font-family="Inter, system-ui" font-weight="800" font-size="40" fill="white" letter-spacing="-2">N</text></svg><h1 class="mt-4 text-[22px] font-bold tracking-tight text-white">Welcome to <span class="gradient-text">NEXA IDE</span></h1><p class="mt-1.5 text-[12px] text-[#475569] text-center">Sign in to access your AI-first development environment</p></div>
+```
+
+Dimensions:
+- top: 50px
+- left: 183px
+- width: 366px
+- height: 140px
+
+CSS:
+```css
+*, ::before, ::after { --tw-border-spacing-x: 0;
+  --tw-border-spacing-y: 0;
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-rotate: 0;
+  --tw-skew-x: 0;
+  --tw-skew-y: 0;
+  --tw-scale-x: 1;
+  --tw-scale-y: 1;
+  --tw-pan-x:  ;
+  --tw-pan-y:  ;
+  --tw-pinch-zoom:  ;
+  --tw-scroll-snap-strictness: proximity;
+  --tw-gradient-from-position:  ;
+  --tw-gradient-via-position:  ;
+  --tw-gradient-to-position:  ;
+  --tw-ordinal:  ;
+  --tw-slashed-zero:  ;
+  --tw-numeric-figure:  ;
+  --tw-numeric-spacing:  ;
+  --tw-numeric-fraction:  ;
+  --tw-ring-inset:  ;
+  --tw-ring-offset-width: 0px;
+  --tw-ring-offset-color: #fff;
+  --tw-ring-color: rgb(59 130 246 / 0.5);
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000;
+  --tw-shadow-colored: 0 0 #0000;
+  --tw-blur:  ;
+  --tw-brightness:  ;
+  --tw-contrast:  ;
+  --tw-grayscale:  ;
+  --tw-hue-rotate:  ;
+  --tw-invert:  ;
+  --tw-saturate:  ;
+  --tw-sepia:  ;
+  --tw-drop-shadow:  ;
+  --tw-backdrop-blur:  ;
+  --tw-backdrop-brightness:  ;
+  --tw-backdrop-contrast:  ;
+  --tw-backdrop-grayscale:  ;
+  --tw-backdrop-hue-rotate:  ;
+  --tw-backdrop-invert:  ;
+  --tw-backdrop-opacity:  ;
+  --tw-backdrop-saturate:  ;
+  --tw-backdrop-sepia:  ;
+  --tw-contain-size:  ;
+  --tw-contain-layout:  ;
+  --tw-contain-paint:  ;
+  --tw-contain-style:  ; }
+*, ::before, ::after { box-sizing: border-box; /* 1 */
+  border-width: 0; /* 2 */
+  border-style: solid; /* 2 */
+  border-color: #e5e7eb; /* 2 */ }
+*, *::before, *::after { box-sizing: border-box;
+  margin: 0;
+  padding: 0; }
+.mb-7 { margin-bottom: 1.75rem; }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+
+/* Pseudo-elements */
+::before, ::after { --tw-content: ''; }
+::selection { background: rgba(139, 92, 246, 0.35);
+  color: #f1f5f9; }
+::-webkit-scrollbar { width: 5px;
+  height: 5px; }
+::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.25);
+  border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Inherited */
+html, body { color: var(--nb-text); font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.5; font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11' }
+html, :host { line-height: 1.5; tab-size: 4 }
+
+/* Resolved values */
+margin: 0px 0px 22.75px;
+padding: 0px;
+border-radius: 0px;
+border: 0px solid rgb(229, 231, 235);
+align-items: center;
+background-attachment: scroll;
+background-clip: border-box;
+background-color: rgba(0, 0, 0, 0);
+background-image: none;
+background-origin: padding-box;
+background-position-x: 0%;
+background-position-y: 0%;
+background-repeat: repeat;
+background-size: auto;
+box-sizing: border-box;
+color: rgb(241, 245, 249);
+display: flex;
+flex-direction: column;
+font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+font-size: 13px;
+height: 116.875px;
+line-height: 19.5px;
+tab-size: 4;
+unicode-bidi: isolate /*UA*/;
+width: 366.4px;
+
+/* CSS variables */
+--nb-text: #f1f5f9;
+```

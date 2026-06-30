@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <SpectreMitigation>false</SpectreMitigation>
+    <SpectreMitigationRequired>false</SpectreMitigationRequired>
+  </PropertyGroup>
+</Project>

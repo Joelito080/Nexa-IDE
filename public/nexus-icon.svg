@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#c4b5fd"/>
+      <stop offset="40%"  stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="rgba(255,255,255,0.35)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0.0)"/>
+    </linearGradient>
+    <filter id="glow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer hexagon -->
+  <polygon
+    points="128,10 238,68 238,188 128,246 18,188 18,68"
+    fill="url(#g1)"
+    filter="url(#glow)"
+  />
+
+  <!-- Inner ring 1 -->
+  <polygon
+    points="128,36 212,82 212,174 128,220 44,174 44,82"
+    fill="none"
+    stroke="url(#g2)"
+    stroke-width="3"
+  />
+
+  <!-- Inner ring 2 -->
+  <polygon
+    points="128,58 194,96 194,160 128,198 62,160 62,96"
+    fill="none"
+    stroke="rgba(255,255,255,0.1)"
+    stroke-width="2"
+  />
+
+  <!-- N letter -->
+  <text
+    x="128" y="170"
+    text-anchor="middle"
+    font-family="Inter, system-ui, sans-serif"
+    font-weight="800"
+    font-size="110"
+    fill="white"
+    letter-spacing="-6"
+  >N</text>
+</svg>

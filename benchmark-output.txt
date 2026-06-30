@@ -1,0 +1,20 @@
+﻿NEXA IDE Benchmark v1.1.0
+============================
+
+{
+  "timestamp": "2026-06-27T22:18:46.488Z",
+  "version": "1.1.0",
+  "coldBootTimeMs": 15,
+  "coldBootNote": "process-spawned",
+  "projectLoadTimeMs": 7.41,
+  "projectTreeScanMs": 0.25,
+  "projectRead100FilesMs": 7.15,
+  "fileOpenLatencyP50Ms": 0.32,
+  "fileOpenLatencyP95Ms": 0.4,
+  "fileOpenLatencyAvgMs": 0.35,
+  "aiFirstTokenLatencyMs": null,
+  "aiNote": "OPENROUTER_API_KEY not set ΓÇö skipped live AI test",
+  "memoryAfter100FilesHeapMB": 5.7,
+  "memoryAfter20ChatsHeapMB": 5.9,
+  "processRssMB": 55.6
+}

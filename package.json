@@ -1,0 +1,156 @@
+﻿{
+  "name": "nexa-ide",
+  "version": "1.1.0",
+  "description": "NEXA IDE â€” OpenRouter AI Development Environment",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "author": "NEXA IDE",
+  "license": "MIT",
+  "scripts": {
+    "clean": "node -e \"const fs = require('fs'); const rm = (p) => fs.existsSync(p) && fs.rmSync(p, { recursive: true, force: true }); rm('dist'); rm('dist-electron');\"",
+    "clean:release": "node -e \"const fs = require('fs'); const rm = (p) => fs.existsSync(p) && fs.rmSync(p, { recursive: true, force: true }); rm('release');\"",
+    "dev": "vite --port 5174 --strictPort true",
+    "build": "npm run clean && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "package": "npm run build && npm run clean:release && electron-builder",
+    "package:win": "npm run build && npm run clean:release && electron-builder --win",
+    "package:mac": "npm run build && npm run clean:release && electron-builder --mac",
+    "package:linux": "npm run build && npm run clean:release && electron-builder --linux",
+    "test:license": "electron electron/license-harness.cjs",
+    "test:all": "npm run test:license && npm run build",
+    "rebuild:native": "electron-rebuild -f -w node-pty || echo Native rebuild skipped",
+    "postinstall": "npm run rebuild:native || true",
+    "dev:electron": "node scripts/dev-electron.mjs"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "chromium-bidi": "^16.0.1",
+    "clsx": "^2.1.0",
+    "framer-motion": "^11.0.8",
+    "ignore": "^7.0.5",
+    "lucide-react": "^0.344.0",
+    "monaco-editor": "^0.53.0",
+    "mongodb": "^5.9.2",
+    "node-pty": "^1.1.0",
+    "playwright-chromium": "^1.61.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-virtualized-auto-sizer": "^2.0.3",
+    "react-window": "^2.2.7",
+    "simple-git": "^3.36.0",
+    "tailwind-merge": "^2.2.1",
+    "three": "^0.184.0",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/node": "^20.11.17",
+    "@types/react": "^18.2.58",
+    "@types/react-dom": "^18.2.19",
+    "@types/react-window": "^1.8.8",
+    "@types/three": "^0.184.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "concurrently": "^7.6.0",
+    "dotenv": "^16.4.3",
+    "electron": "^42.5.0",
+    "electron-builder": "^26.15.3",
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.22.4",
+    "typescript": "^5.3.3",
+    "vite": "^8.1.0",
+    "vite-plugin-electron": "^0.28.4",
+    "vite-plugin-electron-renderer": "^0.14.7",
+    "wait-on": "^7.0.1"
+  },
+  "build": {
+    "appId": "com.NEXA.IDE",
+    "productName": "NEXA IDE",
+    "copyright": "Copyright Â© 2026 NEXA IDE",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "nexa-ide",
+        "repo": "nexa-ide",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "dist-electron/preload.cjs",
+      "!dist-electron/preload.mjs",
+      "!dist-electron/preload.js"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "extraMetadata": {
+      "main": "dist-electron/main.js"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "NEXA.IDE.Setup.${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "artifactName": "NEXA.IDE-${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "Development",
+      "artifactName": "NEXA.IDE-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    }
+  }
+}
+

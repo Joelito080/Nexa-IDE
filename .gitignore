@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+dist-electron/
+release/
+
+# Env files
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+
+# Credentials and secrets
+credentials.json
+**/credentials*.json
+**/client_secret*.json
+**/service-account*.json
+*.pem
+secrets/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional npm cache
+.npm
+
+# ESLint cache
+.eslintcache
+
+# Electron dev runtime data
+.electron-user-data/
+.firebase/
+
+# NEXA runtime files
+.nexus/
+electron/tmp/
+
+# Build logs
+build-output.log
+build.log
+package.log
+vite.log
+vite.err
+out.log
+err.log
+
+# Handle utility
+handle.exe
