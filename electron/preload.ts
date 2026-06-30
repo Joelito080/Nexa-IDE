@@ -335,6 +335,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // OAuth helpers
   oauth: {
     login: (): Promise<unknown> => ipcRenderer.invoke('oauth:login'),
+    isConfigured: (): Promise<boolean> => ipcRenderer.invoke('oauth:isConfigured'),
   },
 
   search: {

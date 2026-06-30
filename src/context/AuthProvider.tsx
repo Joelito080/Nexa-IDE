@@ -42,17 +42,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser]       = useState<OAuthUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
-  const isConfigured          = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID)
+  const [isConfigured, setIsConfigured] = useState(false)
 
   useEffect(() => {
     let mounted = true
     
-    if (!isConfigured) {
-      setLoading(false)
-      return
-    }
     ;(async () => {
       try {
+        const configured = await window.electronAPI?.oauth.isConfigured()
+        if (mounted) {
+          setIsConfigured(!!configured)
+        }
+
+        if (!configured) {
+          if (mounted) setLoading(false)
+          return
+        }
+
         const isTestActive = await window.electronAPI?.invoke('test:isTestSuiteActive')
         if (isTestActive && mounted) {
           const mockUser = {
@@ -123,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })()
 
     return () => { mounted = false }
-  }, [isConfigured])
+  }, [])
 
   const clearError = useCallback(() => setError(null), [])
 

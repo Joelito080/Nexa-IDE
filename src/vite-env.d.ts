@@ -3,7 +3,6 @@
 import type { LicenseStatus } from './types/license'
 
 interface ImportMetaEnv {
-  readonly VITE_GOOGLE_CLIENT_ID?: string
   readonly VITE_BILLING_URL?: string
   readonly VITE_SUPPORT_DOCS_URL?: string
   readonly VITE_SUPPORT_EMAIL?: string
@@ -287,6 +286,7 @@ interface ElectronAPI {
   auth: ElectronAuthAPI
   oauth: {
     login: () => Promise<unknown>
+    isConfigured: () => Promise<boolean>
   }
   dialog: ElectronDialogAPI
   external: ElectronExternalAPI

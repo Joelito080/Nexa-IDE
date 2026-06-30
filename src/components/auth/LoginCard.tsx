@@ -1,4 +1,4 @@
-﻿import { useState } from 'react'
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Mail, Loader2 } from 'lucide-react'
 import { useAuth } from '../../context/AuthProvider'
@@ -63,7 +63,7 @@ export default function LoginCard() {
         <h1 className="mt-4 text-lg font-bold text-white">Google OAuth Not Configured</h1>
         <p className="mt-2 text-[12px] text-[#94a3b8] leading-relaxed mb-4">
           Copy <code className="text-[#a78bfa]">.env.example</code> to <code className="text-[#a78bfa]">.env</code> and
-          add your Google OAuth Client ID as <code className="text-[#a78bfa]">VITE_GOOGLE_CLIENT_ID</code>.
+          add your Google OAuth Client ID as <code className="text-[#a78bfa]">GOOGLE_CLIENT_ID</code>.
         </p>
       </motion.div>
     )

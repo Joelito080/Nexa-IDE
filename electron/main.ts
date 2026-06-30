@@ -336,7 +336,6 @@ const AUTH_HOSTS = [
   'accounts.google.com',
   'firebaseapp.com',
   'google.com',
-  'googleusercontent.com',
 ]
 
 function isAuthUrl(url: string): boolean {
@@ -962,6 +961,10 @@ ipcMain.handle('oauth:login', async () => {
     log.error('oauth:login IPC handler error:', error)
     throw error
   }
+})
+
+ipcMain.handle('oauth:isConfigured', () => {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
 })
 
 // Receive preload execution notification (diagnostic)
