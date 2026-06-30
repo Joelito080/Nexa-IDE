@@ -10,13 +10,16 @@ function base64url(input: Buffer): string {
 
 export async function handleGoogleOAuth(): Promise<any> {
   try {
-    const clientId = process.env.VITE_GOOGLE_CLIENT_ID
-    const clientSecret = process.env.VITE_GOOGLE_CLIENT_SECRET
+    const clientId = process.env.GOOGLE_CLIENT_ID
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET
     // eslint-disable-next-line no-console
-    console.log('OAuth: Starting flow with clientId:', clientId?.slice(0, 20) + '...')
+    console.log('OAuth: Starting main process OAuth flow')
     
-    if (!clientId) {
-      const err = 'Missing VITE_GOOGLE_CLIENT_ID environment variable'
+    if (!clientId || !clientSecret) {
+      const missing = []
+      if (!clientId) missing.push('GOOGLE_CLIENT_ID')
+      if (!clientSecret) missing.push('GOOGLE_CLIENT_SECRET')
+      const err = `Missing Google OAuth environment variables: ${missing.join(', ')}`
       // eslint-disable-next-line no-console
       console.error('OAuth:', err)
       throw new Error(err)
@@ -124,14 +127,11 @@ export async function handleGoogleOAuth(): Promise<any> {
     const tokenBody = new URLSearchParams({
       code,
       client_id: clientId,
+      client_secret: clientSecret,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
     })
-
-    if (clientSecret) {
-      tokenBody.set('client_secret', clientSecret)
-    }
 
     const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -141,10 +141,7 @@ export async function handleGoogleOAuth(): Promise<any> {
 
     if (!tokenResp.ok) {
       const t = await tokenResp.text()
-      let err = 'Token exchange failed: ' + t
-      if (t.includes('client_secret is missing')) {
-        err = 'Token exchange failed: client_secret is missing. Set VITE_GOOGLE_CLIENT_SECRET in your .env or use a client configured for PKCE-only auth.'
-      }
+      const err = 'Token exchange failed: ' + t
       // eslint-disable-next-line no-console
       console.error('OAuth:', err)
       throw new Error(err)

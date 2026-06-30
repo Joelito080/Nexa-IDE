@@ -4,7 +4,6 @@ import type { LicenseStatus } from './types/license'
 
 interface ImportMetaEnv {
   readonly VITE_GOOGLE_CLIENT_ID?: string
-  readonly VITE_GOOGLE_CLIENT_SECRET?: string
   readonly VITE_BILLING_URL?: string
   readonly VITE_SUPPORT_DOCS_URL?: string
   readonly VITE_SUPPORT_EMAIL?: string
@@ -287,7 +286,7 @@ interface ElectronAPI {
   window: ElectronWindowAPI
   auth: ElectronAuthAPI
   oauth: {
-    signInWithGoogle: () => Promise<unknown>
+    login: () => Promise<unknown>
   }
   dialog: ElectronDialogAPI
   external: ElectronExternalAPI

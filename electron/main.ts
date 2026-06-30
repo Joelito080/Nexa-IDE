@@ -1,4 +1,6 @@
 import './shim'
+import dotenv from 'dotenv'
+dotenv.config()
 import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import log from 'electron-log'
@@ -78,24 +80,17 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 console.log('[Electron] __dirname:', __dirname)
 
-if (!app.isPackaged) {
-  try {
-    const require = createRequire(import.meta.url)
-    const dotenv = require('dotenv')
-    dotenv.config({ path: path.resolve(__dirname, '../.env'), override: true })
-    if (process.env.OPENROUTER_API_KEY?.trim()) {
-      setOpenRouterKey(process.env.OPENROUTER_API_KEY.trim())
-    }
-    console.log('[Electron] Loaded env:', {
-      VITE_GOOGLE_CLIENT_ID: process.env.VITE_GOOGLE_CLIENT_ID,
-      VITE_GOOGLE_CLIENT_SECRET: process.env.VITE_GOOGLE_CLIENT_SECRET ? '***' : undefined,
-      OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? '***' : undefined,
-    })
-  } catch (err) {
-    console.warn('[Electron] dotenv not loaded:', err)
+try {
+  if (process.env.OPENROUTER_API_KEY?.trim()) {
+    setOpenRouterKey(process.env.OPENROUTER_API_KEY.trim())
   }
-} else {
-  console.log('[Electron] Packaged app running; skipping dotenv load')
+  console.log('[Electron] Loaded env:', {
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ? '***' : undefined,
+    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '***' : undefined,
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? '***' : undefined,
+  })
+} catch (err) {
+  console.warn('[Electron] Env setup warning:', err)
 }
 
 function writeLogEntrySync(projectPath: string | null, type: 'info' | 'error' | 'warn', category: string, message: string) {
@@ -959,12 +954,12 @@ ipcMain.handle('feedback:openFolder', async () => {
 })
 
 // ─── IPC: OAuth (Google PKCE) ──────────────────────────────────────────────
-ipcMain.handle('oauth:google', async () => {
+ipcMain.handle('oauth:login', async () => {
   try {
     const result = await handleGoogleOAuth()
     return result
   } catch (error) {
-    log.error('oauth:google IPC handler error:', error)
+    log.error('oauth:login IPC handler error:', error)
     throw error
   }
 })

@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser]       = useState<OAuthUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
-  const isConfigured          = true
+  const isConfigured          = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID)
 
   useEffect(() => {
     let mounted = true
