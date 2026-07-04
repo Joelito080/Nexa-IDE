@@ -3,8 +3,9 @@ import type { LicenseStatus } from '../types/license'
 import { clearAllLargeFileStatuses } from '../lib/fileCache'
 
 export type SidebarTab = 'explorer' | 'search' | 'git' | 'debug' | 'extensions' | 'settings' | 'database'
+export type ExtensionsPanelTab = 'installed' | 'marketplace' | 'quarantined'
 export type AIProvider = 'openrouter' | 'free-agent'
-export type UpdateChannel = 'beta' | 'stable'
+export type UpdateChannel = 'beta' | 'stable' | 'nightly'
 
 export interface ExplorerEntry {
   name: string
@@ -33,6 +34,57 @@ export interface TelemetryCounts {
   aiRequests: number
   feedbackSubmitted: number
 }
+
+export interface AiSessionTokenMetrics {
+  inputTokens: number
+  outputTokens: number
+  timestamp: string
+}
+
+export interface AiSessionState {
+  history: any[]
+  systemPrompt: string
+  showSystemPrompt: boolean
+  showUserPrompt: boolean
+  showSelectedFile: boolean
+  showAttachedFiles: boolean
+  showImportedFiles: boolean
+  showWorkspaceContext: boolean
+  temperature: number
+  maxTokens: number
+  topP: number
+  attachedFiles: string[]
+  tokenHistory: AiSessionTokenMetrics[]
+}
+export const buildAiSessionKey = (provider: AIProvider, model: string) => `${provider}:${model}`
+
+export const DEFAULT_AI_SESSION_STATE: AiSessionState = {
+  history: [],
+  systemPrompt: 'You are Nexa Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.',
+  showSystemPrompt: true,
+  showUserPrompt: true,
+  showSelectedFile: true,
+  showAttachedFiles: true,
+  showImportedFiles: true,
+  showWorkspaceContext: true,
+  temperature: 0.5,
+  maxTokens: 1024,
+  topP: 1,
+  attachedFiles: [],
+  tokenHistory: [],
+}
+
+export const createDefaultAiSessionState = (): AiSessionState => ({
+  ...DEFAULT_AI_SESSION_STATE,
+  history: [],
+  attachedFiles: [],
+  tokenHistory: [],
+})
+
+export const getAiSessionState = (state: Pick<AppState, 'aiSessionCache'>, provider: AIProvider, model: string): AiSessionState => {
+  return state.aiSessionCache[buildAiSessionKey(provider, model)] ?? DEFAULT_AI_SESSION_STATE
+}
+
 export type ModalType = 'prompt' | 'confirm'
 
 interface BaseModal {
@@ -64,6 +116,7 @@ export interface Notification {
   id: string
   type: NotificationType
   message: string
+  actions?: { label: string; handler: () => void }[]
 }
 
 interface AppState {
@@ -76,6 +129,10 @@ interface AppState {
   commandPaletteMode: 'command' | 'file'
   aiPanelFocusRequest: number
   terminalFocusRequest: number
+  activeExtensionsPanelTab: ExtensionsPanelTab
+  extensionsPanelTargetExtensionId: string | null
+  setExtensionsPanelTab: (tab: ExtensionsPanelTab) => void
+  setExtensionsPanelTargetExtensionId: (id: string | null) => void
 
   // ── Explorer / Editor ─────────────────────────────────────────────────────
   rootPath:           string | null
@@ -128,11 +185,18 @@ interface AppState {
   unsavedChanges:     Record<string, string>
   terminalHistory:    string
   aiChatHistory:      any[]
+  aiSessionCache:     Record<string, AiSessionState>
   cursorPositions:    Record<string, { line: number; column: number }>
-
+  aiRecoveryPending:  boolean
+  aiHealthState:      any
+  aiHealthSettings:   any
   // ── AI Quick Actions ────────────────────────────────────────────────────
   pendingAiPrompt:   string | null
   setPendingAiPrompt: (prompt: string | null) => void
+
+  // AI Health
+  setAiHealthState: (state: any) => void
+  setAiHealthSettings: (settings: any) => void
 
   // ── UI State ──────────────────────────────────────────────────────────────
   setLicenseStatus:  (status: LicenseStatus | null) => void
@@ -194,10 +258,14 @@ interface AppState {
   setSaveState:       (state: 'Saved' | 'Saving...' | 'Failed') => void
   setExpandedFolders: (folders: Record<string, boolean> | ((prev: Record<string, boolean>) => Record<string, boolean>)) => void
   setAiChatHistory:   (history: any[] | ((prev: any[]) => any[])) => void
+  setAiSessionCache:  (cache: Record<string, AiSessionState>) => void
+  updateAiSession:    (key: string, update: Partial<AiSessionState>) => void
+  setAiSessionHistory:(key: string, history: any[]) => void
   setCursorPositions: (positions: Record<string, { line: number; column: number }>) => void
   updateCursorPosition: (filePath: string, line: number, column: number) => void
+  setAiRecoveryPending: (pending: boolean) => void
   
-  addNotification:   (message: string, type?: NotificationType) => void
+  addNotification:   (message: string, type?: NotificationType, actions?: { label: string; handler: () => void }[]) => void
   removeNotification: (id: string) => void
   openModal:         (modal: ModalState | null) => void
   closeModal:        () => void
@@ -214,6 +282,8 @@ export const useAppStore = create<AppState>((set) => ({
   commandPaletteMode: 'command',
   aiPanelFocusRequest: 0,
   terminalFocusRequest: 0,
+  activeExtensionsPanelTab: 'installed',
+  extensionsPanelTargetExtensionId: null,
   rootPath:         null,
   currentFolder:    null,
   explorerEntries:  [],
@@ -262,16 +332,34 @@ export const useAppStore = create<AppState>((set) => ({
   expandedFolders:  {},
   unsavedChanges: {},
   terminalHistory: '',
-  aiChatHistory: [],
-  cursorPositions: {},
+  aiChatHistory: [],  aiSessionCache: {},  cursorPositions: {},
+  aiRecoveryPending: false,
+  aiHealthState: {},
+  // AI health settings (user-customizable)
+  aiHealthSettings: {
+    thresholds: {
+      tokenPressure: { green: 0.6, yellow: 0.85, red: 1.0 },
+      latency: { green: 2, yellow: 5, red: 10 },
+      errors: { green: 0, yellow: 2, red: 3 },
+      resets: { green: 0, yellow: 3, red: 6 },
+    },
+    weights: {
+      tokenPressure: 0.5,
+      latency: 0.3,
+      errors: 0.15,
+      resets: 0.05,
+    },
+  },
 
   // ── Actions ───────────────────────────────────────────────────────────────
   toggleSidebar:     () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAIPanel:     () => set((s) => ({ aiPanelOpen: !s.aiPanelOpen })),
   toggleBottomPanel: () => set((s) => ({ bottomPanelOpen: !s.bottomPanelOpen })),
-  setSidebarTab:     (tab) => set({ activeSidebarTab: tab }),
-  setSidebarOpen:    (open) => set({ sidebarOpen: open }),
-  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setSidebarTab:     (tab: SidebarTab) => set({ activeSidebarTab: tab }),
+  setSidebarOpen:    (open: boolean) => set({ sidebarOpen: open }),
+  setExtensionsPanelTab: (tab: ExtensionsPanelTab) => set({ activeExtensionsPanelTab: tab }),
+  setExtensionsPanelTargetExtensionId: (id: string | null) => set({ extensionsPanelTargetExtensionId: id }),
+  setCommandPaletteOpen: (open: boolean) => set({ commandPaletteOpen: open }),
   setCommandPaletteMode: (mode) => set({ commandPaletteMode: mode }),
   requestAIPanelFocus: () => set((s) => ({ aiPanelFocusRequest: s.aiPanelFocusRequest + 1 })),
   requestTerminalFocus: () => set((s) => ({ terminalFocusRequest: s.terminalFocusRequest + 1 })),
@@ -317,10 +405,32 @@ export const useAppStore = create<AppState>((set) => ({
   setAiChatHistory:   (history) => set((s) => ({
     aiChatHistory: typeof history === 'function' ? history(s.aiChatHistory) : history,
   })),
+  setAiSessionCache:  (cache) => set({ aiSessionCache: cache }),
+  updateAiSession:    (key, update) => set((s) => ({
+    aiSessionCache: {
+      ...s.aiSessionCache,
+      [key]: {
+        ...(s.aiSessionCache[key] ?? createDefaultAiSessionState()),
+        ...update,
+      },
+    },
+  })),
+  setAiSessionHistory: (key, history) => set((s) => ({
+    aiSessionCache: {
+      ...s.aiSessionCache,
+      [key]: {
+        ...(s.aiSessionCache[key] ?? createDefaultAiSessionState()),
+        history,
+      },
+    },
+  })),
   setCursorPositions: (positions) => set({ cursorPositions: positions }),
   updateCursorPosition: (filePath, line, column) => set((s) => ({
     cursorPositions: { ...s.cursorPositions, [filePath]: { line, column } }
   })),
+  setAiRecoveryPending: (pending) => set({ aiRecoveryPending: pending }),
+  setAiHealthState: (state) => set({ aiHealthState: state }),
+  setAiHealthSettings: (settings) => set({ aiHealthSettings: { ...(useAppStore.getState().aiHealthSettings || {}), ...(settings || {}) } }),
   recordTelemetryEvent: (event) => set((state) => ({
     telemetry: {
       ...state.telemetry,
@@ -332,10 +442,10 @@ export const useAppStore = create<AppState>((set) => ({
   setLicensePanelOpen: (open) => set({ licensePanelOpen: open }),
   setShortcutsModalOpen: (open) => set({ shortcutsModalOpen: open }),
   setTelemetry:      (telemetry) => set({ telemetry }),
-  addNotification:   (message, type = 'info') => {
+  addNotification:   (message, type = 'info', actions) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
     set((state) => {
-      const next = [...state.notifications, { id, type, message }]
+      const next = [...state.notifications, { id, type, message, actions }]
       return { notifications: next.length > 20 ? next.slice(-20) : next }
     })
     setTimeout(() => {

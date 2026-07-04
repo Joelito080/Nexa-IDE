@@ -1,0 +1,14 @@
+[
+  {
+    "id": "nexa.hello-world",
+    "name": "Nexa Hello World",
+    "description": "A sample local extension demonstrating the built-in marketplace flow.",
+    "version": "0.0.1",
+    "publisher": "nexa",
+    "tags": ["demo", "sample", "javascript"],
+    "localPath": "nexa.hello-world",
+    "verified": true,
+    "installs": 42,
+    "rating": 4.9
+  }
+]

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Mail, Loader2 } from 'lucide-react'
 import { useAuth } from '../../context/AuthProvider'
@@ -98,7 +98,7 @@ export default function LoginCard() {
             style={{
               background: 'rgba(248, 113, 113, 0.08)',
               border: '1px solid rgba(248, 113, 113, 0.2)',
-            }}
+            } as CSSProperties}
           >
             <p className="text-[#f87171]">{error}</p>
           </motion.div>

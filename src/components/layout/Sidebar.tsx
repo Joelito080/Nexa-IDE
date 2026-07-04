@@ -383,14 +383,19 @@ function DebugPanel() {
 // ── Extensions Panel ─────────────────────────────────────────────────────────
 const ExtensionsPanel = memo(function ExtensionsPanel() {
   const addNotification = useAppStore((s) => s.addNotification)
+  const activeTab = useAppStore((s) => s.activeExtensionsPanelTab)
+  const setActiveTab = useAppStore((s) => s.setExtensionsPanelTab)
+  const targetExtensionId = useAppStore((s) => s.extensionsPanelTargetExtensionId)
+  const setTargetExtensionId = useAppStore((s) => s.setExtensionsPanelTargetExtensionId)
   const { prompt, confirm } = useAppModal()
-  const [activeTab, setActiveTab] = useState<'installed' | 'marketplace' | 'themes' | 'languages' | 'tools'>('installed')
   const [installedExtensions, setInstalledExtensions] = useState<any[]>([])
   const [marketplaceExtensions, setMarketplaceExtensions] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [installingMap, setInstallingMap] = useState<Record<string, boolean>>({})
+  const [updatesMap, setUpdatesMap] = useState<Record<string, any>>({})
+  const extensionItemRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const setLicenseStatus = useAppStore((s) => s.setLicenseStatus)
 
   // Debounce search query
@@ -406,8 +411,19 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
     try {
       const installedResponse = await window.electronAPI?.extension.listInstalled()
       const marketplaceResponse = await window.electronAPI?.extension.listMarketplace(debouncedQuery)
-      setInstalledExtensions(Array.isArray(installedResponse) ? installedResponse : [])
+      const updatesResponse = await window.electronAPI?.extension.checkForUpdates()
+
+      const installed = Array.isArray(installedResponse) ? installedResponse : []
+      setInstalledExtensions(installed)
       setMarketplaceExtensions(Array.isArray(marketplaceResponse) ? marketplaceResponse : [])
+
+      if (Array.isArray(updatesResponse)) {
+        const map: Record<string, any> = {}
+        updatesResponse.forEach((item: any) => {
+          map[item.id] = item
+        })
+        setUpdatesMap(map)
+      }
     } catch (e) {
       console.error(e)
     } finally {
@@ -418,7 +434,16 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
   const refreshInstalled = async () => {
     try {
       const installedResponse = await window.electronAPI?.extension.listInstalled()
-      setInstalledExtensions(Array.isArray(installedResponse) ? installedResponse : [])
+      const updatesResponse = await window.electronAPI?.extension.checkForUpdates()
+      const installed = Array.isArray(installedResponse) ? installedResponse : []
+      setInstalledExtensions(installed)
+      if (Array.isArray(updatesResponse)) {
+        const map: Record<string, any> = {}
+        updatesResponse.forEach((item: any) => {
+          map[item.id] = item
+        })
+        setUpdatesMap(map)
+      }
     } catch (e) {
       console.error(e)
     }
@@ -534,8 +559,68 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
     }
   }
 
+  const handleUpdate = async (extensionId: string) => {
+    setInstallingMap((prev) => ({ ...prev, [extensionId]: true }))
+    try {
+      const response = await window.electronAPI?.extension.updateExtension(extensionId)
+      if (response && !(response as any).error) {
+        await refreshInstalled()
+        addNotification('Extension updated successfully.', 'success')
+      } else {
+        addNotification(`Update failed: ${(response as any).error ?? 'Unknown error'}`, 'error')
+      }
+    } catch (e: any) {
+      addNotification(`Update failed: ${e.message || e}`, 'error')
+    } finally {
+      setInstallingMap((prev) => ({ ...prev, [extensionId]: false }))
+    }
+  }
+
+  const handleUpdateAll = async () => {
+    setLoading(true)
+    try {
+      const response = await window.electronAPI?.extension.updateAllExtensions()
+      if (response && !(response as any).error) {
+        addNotification((response as any).summary ?? 'Update check complete', 'success')
+        await refreshInstalled()
+      } else {
+        addNotification(`Update all failed: ${(response as any).error ?? 'Unknown error'}`, 'error')
+      }
+    } catch (e: any) {
+      addNotification(`Update all failed: ${e.message || e}`, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const getInstalledStatus = (extId: string) => {
     return installedExtensions.find((item) => item.id === extId)
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'marketplace' || !targetExtensionId) return
+    const timeout = setTimeout(() => {
+      const target = extensionItemRefs.current[targetExtensionId]
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        target.classList.add('ring-2', 'ring-[#a855f7]', 'ring-offset-2', 'ring-offset-slate-950')
+        setTimeout(() => {
+          target.classList.remove('ring-2', 'ring-[#a855f7]', 'ring-offset-2', 'ring-offset-slate-950')
+        }, 2400)
+        setTargetExtensionId(null)
+      }
+    }, 80)
+    return () => clearTimeout(timeout)
+  }, [activeTab, targetExtensionId, setTargetExtensionId])
+
+  const isUpdateAvailable = (extId: string) => {
+    const update = updatesMap[extId]
+    return update?.updateAvailable
+  }
+
+  const getLatestVersion = (extId: string) => {
+    const update = updatesMap[extId]
+    return update?.latestVersion ?? null
   }
 
   const isTheme = (ext: any) => {
@@ -556,24 +641,38 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
     if (activeTab === 'installed') {
       return installedExtensions.filter((ext) => {
         const q = searchQuery.toLowerCase()
-        return !q || ext.name.toLowerCase().includes(q) || 
+        const publisher = (ext.manifest?.publisher || (ext as any).publisher || '').toLowerCase()
+        return !q ||
+               ext.name.toLowerCase().includes(q) ||
                (ext.description && ext.description.toLowerCase().includes(q)) ||
-               ext.id.toLowerCase().includes(q)
+               ext.id.toLowerCase().includes(q) ||
+               publisher.includes(q)
       })
     }
-    
-    // Remote lists are already query-filtered from the API. We apply category filters here.
-    if (activeTab === 'themes') {
-      return marketplaceExtensions.filter(isTheme)
+
+    if (activeTab === 'quarantined') {
+      return installedExtensions.filter((ext) => ext.quarantined).filter((ext) => {
+        const q = searchQuery.toLowerCase()
+        const publisher = (ext.manifest?.publisher || (ext as any).publisher || '').toLowerCase()
+        return !q ||
+               ext.name.toLowerCase().includes(q) ||
+               (ext.description && ext.description.toLowerCase().includes(q)) ||
+               ext.id.toLowerCase().includes(q) ||
+               publisher.includes(q)
+      })
     }
-    if (activeTab === 'languages') {
-      return marketplaceExtensions.filter(isLanguage)
-    }
-    if (activeTab === 'tools') {
-      return marketplaceExtensions.filter((ext) => !isTheme(ext) && !isLanguage(ext))
-    }
-    
-    return marketplaceExtensions
+
+    return marketplaceExtensions.filter((ext) => {
+      const q = searchQuery.toLowerCase()
+      const publisher = (ext.publisher || '').toLowerCase()
+      const tags = (ext.tags || []).join(' ').toLowerCase()
+      return !q ||
+             ext.name.toLowerCase().includes(q) ||
+             (ext.description && ext.description.toLowerCase().includes(q)) ||
+             ext.id.toLowerCase().includes(q) ||
+             publisher.includes(q) ||
+             tags.includes(q)
+    })
   }, [activeTab, installedExtensions, marketplaceExtensions, searchQuery])
 
   // Custom helper to render icons
@@ -645,6 +744,7 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
   const renderActionButton = (ext: any) => {
     const installed = getInstalledStatus(ext.id)
     const isInstalling = installingMap[ext.id]
+    const updateAvailable = isUpdateAvailable(ext.id)
 
     if (isInstalling) {
       return (
@@ -659,12 +759,53 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
     }
 
     if (installed) {
+      if (installed.quarantined) {
+        return (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={async () => {
+                try {
+                  const response = await window.electronAPI?.extension.clearQuarantine(ext.id)
+                  if (response && !(response as any).error) {
+                    addNotification('Quarantine cleared.', 'success')
+                    await refreshInstalled()
+                  } else {
+                    addNotification(`Unable to clear quarantine: ${(response as any).error ?? 'Unknown error'}`, 'error')
+                  }
+                } catch (err: any) {
+                  addNotification(`Unable to clear quarantine: ${err.message || err}`, 'error')
+                }
+              }}
+              className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[9.5px] font-medium hover:bg-amber-500/15 transition-all"
+            >
+              Restore
+            </button>
+            <button
+              onClick={() => uninstallExtension(ext.id)}
+              title="Uninstall Extension"
+              className="p-0.5 rounded bg-white/5 border border-white/10 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-[#94a3b8] transition-all"
+            >
+              <Trash2 size={9} />
+            </button>
+          </div>
+        )
+      }
+
       return (
         <div className="flex items-center gap-1">
-          <span className="text-emerald-400 flex items-center gap-0.5 text-[9.5px] font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 select-none">
-            <Check size={8} strokeWidth={3} />
-            <span>Installed</span>
-          </span>
+          {updateAvailable ? (
+            <button
+              onClick={() => handleUpdate(ext.id)}
+              className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[9.5px] font-medium hover:bg-amber-500/15 transition-all"
+            >
+              Update
+            </button>
+          ) : (
+            <span className="text-emerald-400 flex items-center gap-0.5 text-[9.5px] font-medium px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 select-none">
+              <Check size={8} strokeWidth={3} />
+              <span>Installed</span>
+            </span>
+          )}
           <button
             onClick={() => uninstallExtension(ext.id)}
             title="Uninstall Extension"
@@ -702,6 +843,19 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
         />
       )
     }
+
+    if (activeTab === 'quarantined') {
+      title = "No quarantined extensions"
+      subtitle = "Extensions that crash repeatedly will be quarantined here"
+      return (
+        <EmptyState
+          icon={<Bug size={22} />}
+          title={title}
+          subtitle={subtitle}
+        />
+      )
+    }
+
     return (
       <EmptyState
         icon={<Blocks size={22} />}
@@ -752,7 +906,16 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
         >
           <Puzzle size={13} />
         </button>
-        
+        {activeTab === 'installed' && (
+          <button
+            type="button"
+            onClick={handleUpdateAll}
+            title="Update All Extensions"
+            className="flex-shrink-0 p-1 rounded-md bg-white/[0.02] border border-white/10 hover:bg-white/5 text-[#94a3b8] hover:text-white transition-all"
+          >
+            <RefreshCw size={13} />
+          </button>
+        )}
         <button
           type="button"
           onClick={loadExtensions}
@@ -769,16 +932,14 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {[
-          { id: 'installed', label: 'Installed' },
-          { id: 'marketplace', label: 'Marketplace' },
-          { id: 'themes', label: 'Themes' },
-          { id: 'languages', label: 'Language' },
-          { id: 'tools', label: 'Tools' }
+          { id: 'installed' as const, label: 'Installed' },
+          { id: 'marketplace' as const, label: 'Marketplace' },
+          { id: 'quarantined' as const, label: 'Quarantined' },
         ].map((tab) => (
           <button
             key={tab.id}
             type="button"
-            onClick={() => setActiveTab(tab.id as any)}
+            onClick={() => setActiveTab(tab.id)}
             className={`flex-shrink-0 rounded px-2 py-0.5 text-[10px] font-medium border transition-all ${
               activeTab === tab.id
                 ? 'bg-[#a855f7]/10 text-[#c084fc] border-[#a855f7]/20'
@@ -804,6 +965,7 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
               
               return (
                 <div
+                  ref={(el) => { if (extension.id) extensionItemRefs.current[extension.id] = el }}
                   key={extension.id}
                   className="group relative flex items-center justify-between gap-2.5 p-2 rounded-xl bg-white/[0.01] border border-white/[0.05] hover:border-purple-500/20 hover:bg-white/[0.03] transition-all duration-200 h-[62px]"
                 >
@@ -836,6 +998,11 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
                             {t}
                           </span>
                         ))}
+                        {installed?.quarantined ? (
+                          <span className="text-[8px] px-1 bg-amber-500/10 text-amber-200 rounded border border-amber-500/15 leading-none py-0.2">
+                            Quarantined
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -843,6 +1010,11 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
                   {/* Right: Version, rating, downloads, action */}
                   <div className="flex flex-col items-end justify-between h-full min-w-[64px] text-right flex-shrink-0 py-0.5">
                     <span className="text-[8.5px] text-[#6b7280] font-mono leading-none">{extension.version}</span>
+                    {activeTab === 'installed' && isUpdateAvailable(extension.id) ? (
+                      <span className="text-[8px] px-1 rounded bg-amber-500/10 text-amber-200 border border-amber-500/15 mt-1">
+                        Update {getLatestVersion(extension.id) || ''}
+                      </span>
+                    ) : null}
                     
                     <div className="flex items-center gap-1 leading-none select-none">
                       {renderRating(extension.averageRating)}
@@ -852,24 +1024,57 @@ const ExtensionsPanel = memo(function ExtensionsPanel() {
                     
                     {activeTab === 'installed' ? (
                       <div className="flex items-center gap-1 leading-none">
-                        <button
-                          type="button"
-                          onClick={() => toggleExtension(extension.id, !extension.enabled)}
-                          className={`px-1.5 py-0.5 rounded text-[8.5px] font-medium border transition-all leading-none ${
-                            extension.enabled
-                              ? 'bg-white/5 border-white/10 text-white hover:bg-white/10'
-                              : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/25'
-                          }`}
-                        >
-                          {extension.enabled ? 'Disable' : 'Enable'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => uninstallExtension(extension.id)}
-                          className="p-0.5 rounded bg-white/5 border border-white/10 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-[#94a3b8] transition-all leading-none"
-                        >
-                          <Trash2 size={9} />
-                        </button>
+                        {installed?.quarantined ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const response = await window.electronAPI?.extension.clearQuarantine(extension.id)
+                                  if (response && !(response as any).error) {
+                                    addNotification('Quarantine cleared. You can now re-enable this extension.', 'success')
+                                    await refreshInstalled()
+                                  } else {
+                                    addNotification(`Unable to clear quarantine: ${(response as any).error ?? 'Unknown error'}`, 'error')
+                                  }
+                                } catch (err: any) {
+                                  addNotification(`Unable to clear quarantine: ${err.message || err}`, 'error')
+                                }
+                              }}
+                              className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[8.5px] font-medium hover:bg-amber-500/15 transition-all"
+                            >
+                              Restore
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => uninstallExtension(extension.id)}
+                              className="p-0.5 rounded bg-white/5 border border-white/10 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-[#94a3b8] transition-all leading-none"
+                            >
+                              <Trash2 size={9} />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => toggleExtension(extension.id, !extension.enabled)}
+                              className={`px-1.5 py-0.5 rounded text-[8.5px] font-medium border transition-all leading-none ${
+                                extension.enabled
+                                  ? 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                                  : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/25'
+                              }`}
+                            >
+                              {extension.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => uninstallExtension(extension.id)}
+                              className="p-0.5 rounded bg-white/5 border border-white/10 hover:bg-red-500/10 hover:border-red-500/30 hover:text-red-400 text-[#94a3b8] transition-all leading-none"
+                            >
+                              <Trash2 size={9} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : (
                       renderActionButton(extension)

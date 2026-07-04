@@ -61,6 +61,11 @@ export default function StatusBar() {
   const licenseLoading = useAppStore((s) => s.licenseLoading)
   const setLicensePanelOpen = useAppStore((s) => s.setLicensePanelOpen)
   const setShortcutsModalOpen = useAppStore((s) => s.setShortcutsModalOpen)
+  const addNotification = useAppStore((s) => s.addNotification)
+  const aiHealth = useAppStore((s) => s.aiHealthState)
+  const aiHealthSettings = useAppStore((s) => s.aiHealthSettings)
+  const setAIPanelOpen = useAppStore((s) => s.setAIPanelOpen)
+  const requestAIPanelFocus = useAppStore((s) => s.requestAIPanelFocus)
 
   return (
     <div
@@ -113,10 +118,13 @@ export default function StatusBar() {
       </div>
 
       {/* ── Center — AI Status ───────────────────────────────────────────── */}
-      <div className="flex items-center gap-1.5 text-white/90 text-[10px] font-medium absolute left-1/2 -translate-x-1/2">
+        <div className="flex items-center gap-1.5 text-white/90 text-[10px] font-medium absolute left-1/2 -translate-x-1/2">
         <Bot size={10} />
-        <span>NEXUS · Local · llama3</span>
-        <div className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse" />
+        <span>NEXA · Local · {aiHealth?.activeModel || 'llama3'}</span>
+        <div
+          className={`w-1.5 h-1.5 rounded-full ${aiHealth?.statusColor === 'red' ? 'bg-rose-500' : aiHealth?.statusColor === 'yellow' ? 'bg-amber-400' : 'bg-emerald-400'}`}
+          title={`Token thresholds: ${aiHealthSettings?.thresholds?.tokenPressure?.green ?? '-'} / ${aiHealthSettings?.thresholds?.tokenPressure?.yellow ?? '-'} / ${aiHealthSettings?.thresholds?.tokenPressure?.red ?? '-'}; Weights: ${aiHealthSettings?.weights ? Object.values(aiHealthSettings.weights).map((v:any)=>v.toFixed(2)).join(',') : '-'}`}
+        />
         <div style={{ width: 8 }} />
         <div className="text-[11px] text-white/90">
           {licenseLoading ? 'Checking license…' : licenseStatus ? `${licenseStatus.plan.toUpperCase()}` : 'No license'}
@@ -127,6 +135,14 @@ export default function StatusBar() {
           className="ml-2 text-[11px] text-[#cbd5e1] hover:text-white"
         >
           Manage
+        </button>
+        <button
+          type="button"
+          title={`Model: ${aiHealth?.activeModel || '—'}\nProvider: ${aiHealth?.provider || '—'}\nToken usage: ${aiHealth?.currentTokenUsage ?? '—'}\nLatency avg: ${aiHealth?.latencyAverage ?? '—'}\nErrors: ${aiHealth?.errorCount ?? 0}\nResets: ${aiHealth?.resetCount ?? 0}`}
+          onClick={() => { setAIPanelOpen(true); requestAIPanelFocus() }}
+          className="ml-2 text-[11px] text-[#cbd5e1] hover:text-white"
+        >
+          AI: {aiHealth?.statusColor === 'red' ? 'Overloaded' : aiHealth?.statusColor === 'yellow' ? 'Heavy' : 'Healthy'}
         </button>
       </div>
 
@@ -158,6 +174,33 @@ export default function StatusBar() {
         <div className="flex items-center gap-1 px-1 py-0.5 rounded text-white/80 text-[10px]">
           LF
         </div>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const res = await window.electronAPI?.app.exportDiagnostics()
+              if (res?.success && res.savedTo) {
+                const saved = res.savedTo as string
+                addNotification('Diagnostics exported successfully', 'success', [
+                  { label: 'Open Folder', handler: () => window.electronAPI?.app.openDiagnosticsFolder() },
+                  { label: 'Reveal ZIP', handler: () => window.electronAPI?.app.revealInFolder(saved) },
+                  { label: 'Copy Path', handler: async () => { await window.electronAPI?.app.copyPathToClipboard(saved); useAppStore.getState().addNotification('Path copied to clipboard', 'success') } },
+                ])
+              } else if (res?.canceled) {
+                addNotification('Diagnostics export canceled', 'info')
+              } else if (res?.error) {
+                addNotification(`Diagnostics export failed: ${res.error}`, 'error')
+              } else {
+                addNotification('Diagnostics export completed', 'success')
+              }
+            } catch (err) {
+              addNotification(`Export failed: ${(err as Error).message}`, 'error')
+            }
+          }}
+          className="ml-2 text-[11px] text-[#cbd5e1] hover:text-white"
+        >
+          Export Diagnostics
+        </button>
       </div>
     </div>
   )

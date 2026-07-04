@@ -110,6 +110,7 @@ interface ElectronAiAPI {
   getBudget: () => Promise<{ date?: string; dailySpend: number; limit: number; error?: string }>
   /** Key configured flag — never exposes the secret. */
   isKeyConfigured: () => Promise<{ configured: boolean; fromEnv: boolean }>
+  getLiveSnapshot?: () => Promise<any | null>
 }
 
 interface ElectronExtensionAPI {
@@ -122,6 +123,11 @@ interface ElectronExtensionAPI {
   uninstall: (extensionId: string) => Promise<unknown>
   listCommands: () => Promise<unknown>
   runCommand: (commandId: string, ...args: any[]) => Promise<unknown>
+  checkForUpdates: () => Promise<unknown>
+  updateExtension: (extensionId: string) => Promise<unknown>
+  updateAllExtensions: () => Promise<unknown>
+  clearQuarantine: (extensionId: string) => Promise<unknown>
+  reloadExtensions: () => Promise<unknown>
 }
 
 interface ElectronProjectAPI {
@@ -159,13 +165,37 @@ interface ElectronPremiumAPI {
 interface ElectronSettingsAPI {
   load: () => Promise<unknown>
   save: (settings: unknown) => Promise<unknown>
+  uploadSync: (accessToken: string) => Promise<any>
+  downloadSync: (accessToken: string) => Promise<any>
+}
+
+interface CrashHistoryEntry {
+  timestamp: string
+  component: string
+  reason: string
+  shortStack?: string
+  details?: string
+  suggestedSafeMode?: string[]
 }
 
 interface ElectronAppAPI {
   getVersion: () => Promise<string>
   getDiagnostics: (projectPath: string | null) => Promise<any>
+  exportDiagnostics: () => Promise<any>
+  openDiagnosticsFolder: () => Promise<any>
+  revealInFolder: (filePath: string) => Promise<any>
+  copyPathToClipboard: (filePath: string) => Promise<any>
+  getCrashLog: () => Promise<{ content?: string; error?: string }>
+  getAILog: () => Promise<{ logs?: Record<string,string>; error?: string }>
+  clearDiagnostics: () => Promise<{ success?: true; removed?: string[]; error?: string }>
   logRendererError: (projectPath: string | null, error: string, stack?: string) => Promise<any>
   allowPath: (dirPath: string) => void
+  isSafeMode: () => Promise<boolean>
+  relaunchNormal: () => Promise<any>
+  getCrashMetadata: () => Promise<{ crashMetadata: { source: string; reason: string; details?: string; timestamp: string } | null }>
+  clearCrashMetadata: () => Promise<any>
+  getCrashHistory: () => Promise<{ history?: CrashHistoryEntry[]; error?: string }>
+  clearCrashHistory: () => Promise<{ success?: true; error?: string }>
 }
 
 interface ElectronLogsAPI {

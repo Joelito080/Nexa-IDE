@@ -6,7 +6,18 @@ node_modules/
 # Build outputs
 dist/
 dist-electron/
+build/
 release/
+
+# AI ignore patterns
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+node_modules/**
+coverage/**
+.next/**
+*.min.js
+*.map
 
 # Env files
 .env

@@ -7,8 +7,11 @@ import {
   Zap, Circle, AlertCircle, ChevronRight, Search, Star, History,
   Sliders, SlidersHorizontal, Scale, ShieldAlert, Cpu
 } from 'lucide-react'
-import { useAppStore } from '../../store/appStore'
-import { getFileContent } from '../../lib/fileCache'
+import { useAppStore, buildAiSessionKey, getAiSessionState, DEFAULT_AI_SESSION_STATE } from '../../store/appStore'
+import AIHealthPanel from './AIHealthPanel'
+import { calculatePromptBudget, buildTokenBudgetedPrompt, PromptSection } from '../../lib/aiTokenBudget'
+import { useAppModal } from '../ui/ModalDialog'
+import { getFileContent, clearFileCache, clearAllLargeFileStatuses } from '../../lib/fileCache'
 
 // â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -22,6 +25,8 @@ const SLASH_COMMANDS = [
   { cmd: '/document', icon: 'ðŸ“', desc: 'Add documentation and JSDoc' },
   { cmd: '/debug', icon: 'ðŸ›', desc: 'Add debug logging' },
 ]
+
+const FILE_COMMANDS = new Set(['/fix', '/explain', '/optimize', '/debug', '/test', '/document', '/refactor'])
 
 // â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -72,14 +77,27 @@ function getBaseName(p: string) {
   return p.replace(/\\/g, '/').split('/').pop() ?? p
 }
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
+const MAX_AI_ATTACHED_FILES = 5
+const MAX_AI_FILE_BYTES = 200 * 1024
+const MAX_AI_FILE_LINES = 3000
 
-function truncateToTokenBudget(text: string, maxTokens: number): string {
-  const maxChars = Math.max(0, maxTokens * 4)
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n...[truncated for context limit]...`
+function truncateFileContent(content: string): { content: string; truncated: boolean } {
+  const lines = content.split('\n')
+  if (lines.length > MAX_AI_FILE_LINES) {
+    return {
+      content: lines.slice(0, MAX_AI_FILE_LINES).join('\n') + '\n...[truncated after 3000 lines]...',
+      truncated: true,
+    }
+  }
+  if (new Blob([content]).size > MAX_AI_FILE_BYTES) {
+    const allowed = Math.floor((MAX_AI_FILE_BYTES / content.length) * content.length)
+    const truncated = content.slice(0, allowed)
+    return {
+      content: truncated + '\n...[truncated after 200KB]...',
+      truncated: true,
+    }
+  }
+  return { content, truncated: false }
 }
 
 function extractImports(content: string): string[] {
@@ -369,6 +387,10 @@ export default function NexusAssistant() {
   const pendingAiPrompt = useAppStore((s) => s.pendingAiPrompt)
   const setPendingAiPrompt = useAppStore((s) => s.setPendingAiPrompt)
   const openTabs = useAppStore((s) => s.openTabs)
+  const updateAiSession = useAppStore((s) => s.updateAiSession)
+  const currentSession = useAppStore((s) => getAiSessionState(s, 'openrouter', openrouterModel))
+  const aiSessionKey = buildAiSessionKey('openrouter', openrouterModel)
+  const { confirm } = useAppModal()
 
   // â”€â”€ Local state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [input, setInput] = useState('')
@@ -409,6 +431,11 @@ export default function NexusAssistant() {
   const [maxTokens, setMaxTokens] = useState(4096)
   const [topP, setTopP] = useState(0.9)
   const [systemPrompt, setSystemPrompt] = useState('You are Nexus Assistant, an expert AI coding assistant built into NEXA IDE. Be concise, precise, and output well-formatted code.')
+  const [showSystemPrompt, setShowSystemPrompt] = useState(true)
+  const [showAttachedFiles, setShowAttachedFiles] = useState(true)
+  const [showSelectedFile, setShowSelectedFile] = useState(true)
+  const [showImportedFiles, setShowImportedFiles] = useState(true)
+  const [showWorkspaceContext, setShowWorkspaceContext] = useState(false)
 
   // â”€â”€ Refs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -418,6 +445,36 @@ export default function NexusAssistant() {
   const streamingMsgIdRef = useRef<string | null>(null)
   const queryStartTimeRef = useRef<number | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+
+  // Restore per-model session when switching models
+  useEffect(() => {
+    const session = currentSession || DEFAULT_AI_SESSION_STATE
+    setMessages(session.history)
+    setSystemPrompt(session.systemPrompt)
+    setShowSystemPrompt(session.showSystemPrompt)
+    setShowAttachedFiles(session.showAttachedFiles)
+    setShowSelectedFile(session.showSelectedFile)
+    setShowImportedFiles(session.showImportedFiles)
+    setShowWorkspaceContext(session.showWorkspaceContext)
+    setTemperature(session.temperature)
+    setMaxTokens(session.maxTokens)
+    setTopP(session.topP)
+  }, [aiSessionKey])
+
+  useEffect(() => {
+    updateAiSession(aiSessionKey, {
+      history: messages,
+      systemPrompt,
+      showSystemPrompt,
+      showAttachedFiles,
+      showSelectedFile,
+      showImportedFiles,
+      showWorkspaceContext,
+      temperature,
+      maxTokens,
+      topP,
+    })
+  }, [aiSessionKey, messages, systemPrompt, showSystemPrompt, showAttachedFiles, showSelectedFile, showImportedFiles, showWorkspaceContext, temperature, maxTokens, topP, updateAiSession])
 
   // â”€â”€ Fetch Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadModelsList = useCallback(async (force = false) => {
@@ -569,6 +626,53 @@ export default function NexusAssistant() {
     })
   }, [])
 
+  // Check if two models are compatible (same provider/family)
+  const areModelsCompatible = (model1: string, model2: string): boolean => {
+    if (!model1 || !model2) return true
+    // Extract provider (e.g., 'openai' from 'openai/gpt-4o')
+    const provider1 = model1.split('/')[0]
+    const provider2 = model2.split('/')[0]
+    // Models from the same provider family are considered compatible
+    return provider1 === provider2
+  }
+
+  // Handle model switching with context management and compatibility checks
+  const handleModelSwitch = useCallback(async (newModel: string) => {
+    const previousModel = openrouterModel
+    const isCompatible = areModelsCompatible(previousModel, newModel)
+
+    if (!isCompatible && messages.length > 0) {
+      // Prompt user about potential context drift
+      const shouldReset = await confirm({
+        title: 'Switch Models',
+        message: `Switching from ${previousModel} to ${newModel}\n\nSwitching models may cause context drift. Do you want to reset the session and clear hidden context?`,
+        confirmText: 'Reset Session',
+        cancelText: 'Keep Chat History',
+      })
+
+      if (shouldReset) {
+        // Clear hidden context but preserve visible chat
+        clearFileCache()
+        clearAllLargeFileStatuses()
+        setAttachedFiles([])
+        // Messages are preserved
+        addNotification(`Switched to ${newModel}: hidden context cleared, chat preserved`, 'info')
+      } else {
+        addNotification(`Switched to ${newModel}: keeping chat history`, 'warning')
+      }
+    } else if (isCompatible && messages.length > 0) {
+      // Clear only temporary tool state and file cache for compatible models
+      clearFileCache()
+      clearAllLargeFileStatuses()
+      addNotification(`Switched to ${newModel}`, 'success')
+    }
+
+    // Update the model and add to recents
+    setOpenrouterModel(newModel)
+    addRecent(newModel)
+    setShowSelectorDropdown(false)
+  }, [openrouterModel, messages.length, confirm, addNotification, addRecent])
+
   const dedupedModels = models.filter((m, idx, arr) => arr.findIndex((x) => x.id === m.id) === idx)
 
   const filteredModels = dedupedModels.filter(m => {
@@ -608,77 +712,195 @@ export default function NexusAssistant() {
   const buildPrompt = useCallback((userText: string) => {
     const modelInfo = dedupedModels.find((m) => m.id === openrouterModel)
     const contextLimit = modelInfo?.context_length ?? 128000
-    const reservedForReply = Math.min(maxTokens, Math.floor(contextLimit * 0.25))
-    let remainingBudget = Math.max(4096, contextLimit - reservedForReply - estimateTokens(systemPrompt))
+    const { promptBudget } = calculatePromptBudget(maxTokens, contextLimit, 0.2)
+    
+    const promptSystemText = showSystemPrompt ? systemPrompt : ''
+    const commandToken = userText.trim().split(/\s+/)[0].toLowerCase()
+    const includeSelectedFile = showSelectedFile && selectedFilePath && FILE_COMMANDS.has(commandToken)
 
-    const parts: string[] = []
-    const pack = (section: string, share = 0.35) => {
-      const budget = Math.floor(remainingBudget * share)
-      const packed = truncateToTokenBudget(section, budget)
-      remainingBudget -= estimateTokens(packed)
-      parts.push(packed)
+    const sections: PromptSection[] = []
+
+    // System prompt (preserve, highest priority)
+    if (promptSystemText) {
+      sections.push({
+        id: 'system',
+        content: `System Prompt:\n${promptSystemText}`,
+        preserve: true,
+        allowTruncate: false,
+        priority: 0,
+        category: 'system'
+      })
     }
 
-    if (projectContextMode && rootPath) {
-      pack(`[Project root: ${rootPath}]`, 0.05)
+    // User request (preserve, high priority)
+    sections.push({
+      id: 'user-request',
+      content: `User Request:\n${userText}`,
+      preserve: true,
+      allowTruncate: false,
+      priority: 1,
+      category: 'user'
+    })
+
+    // Command directives (preserve, high priority)
+    if (userText.startsWith('/fix') && selectedFilePath) {
+      sections.push({
+        id: 'fix-directive',
+        content: 'Focus: Diagnose and fix bugs, syntax errors, and runtime issues. Output corrected code blocks.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/refactor') && selectedFilePath) {
+      sections.push({
+        id: 'refactor-directive',
+        content: 'Focus: Refactor for readability and maintainability without changing behavior.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/debug') && selectedFilePath) {
+      sections.push({
+        id: 'debug-directive',
+        content: 'Focus: Add strategic debug logging, trace execution paths, and explain likely failure points.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/optimize') && selectedFilePath) {
+      sections.push({
+        id: 'optimize-directive',
+        content: 'Focus: Improve performance, reduce allocations/complexity, and explain trade-offs.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/generate')) {
+      sections.push({
+        id: 'generate-directive',
+        content: 'Focus: Generate production-ready code matching project conventions.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/test') && selectedFilePath) {
+      sections.push({
+        id: 'test-directive',
+        content: 'Focus: Generate comprehensive unit tests covering edge cases for this file.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
+    } else if (userText.startsWith('/document') && selectedFilePath) {
+      sections.push({
+        id: 'document-directive',
+        content: 'Focus: Add JSDoc/TSDoc and inline documentation for public APIs.',
+        preserve: true,
+        allowTruncate: false,
+        priority: 2,
+        category: 'directive'
+      })
     }
 
-    if (projectContextMode && openTabs.length > 0) {
-      const tabLines = openTabs.slice(0, 8).map((tab) => `- ${tab}`).join('\n')
-      pack(`--- Open Editor Tabs ---\n${tabLines}`, 0.08)
+    // Active file (medium priority, high value)
+    if (includeSelectedFile) {
+      const content = getFileContent(selectedFilePath!) ?? ''
+      const lineCtx = selectedLineNumber ? ` (cursor line ${selectedLineNumber})` : ''
+      sections.push({
+        id: 'selected-file',
+        content: `Active file${lineCtx}: ${selectedFilePath!}\n\`\`\`\n${content}\n\`\`\``,
+        preserve: false,
+        allowTruncate: true,
+        priority: 4,
+        category: 'selectedFile'
+      })
     }
 
-    if (selectedFilePath) {
-      const content = getFileContent(selectedFilePath) ?? ''
-      const imports = extractImports(content)
-      if (imports.length > 0) {
-        pack(`--- Related imports (${getBaseName(selectedFilePath)}) ---\n${imports.join('\n')}`, 0.1)
-      }
-    }
-
-    if (projectContextMode && openTabs.length > 0) {
-      for (const tab of openTabs.slice(0, 4)) {
-        if (remainingBudget < 1024) break
-        const content = getFileContent(tab)
+    // Attached files (medium priority)
+    if (showAttachedFiles && attachedFiles.length > 0) {
+      const attachedParts: string[] = []
+      for (const f of attachedFiles) {
+        const content = getFileContent(f)
         if (content) {
-          pack(`File: ${tab}\n\`\`\`\n${content}\n\`\`\``, 0.12)
+          const safeContent = truncateFileContent(content).content
+          attachedParts.push(`Attached — ${f}:\n\`\`\`\n${safeContent}\n\`\`\``)
         }
       }
+      if (attachedParts.length > 0) {
+        sections.push({
+          id: 'attached-files',
+          content: attachedParts.join('\n\n'),
+          preserve: false,
+          allowTruncate: true,
+          priority: 3,
+          category: 'attachments'
+        })
+      }
     }
 
-    for (const f of attachedFiles) {
-      if (remainingBudget < 512) break
-      const content = getFileContent(f)
-      if (content) pack(`Attached â€” ${f}:\n\`\`\`\n${content}\n\`\`\``, 0.15)
+    // Project context tabs (lower priority, can be truncated)
+    if (projectContextMode && openTabs.length > 0) {
+      const tabParts: string[] = []
+      for (const tab of openTabs.slice(0, 4)) {
+        const content = getFileContent(tab)
+        if (content) {
+          tabParts.push(`File: ${tab}\n\`\`\`\n${content}\n\`\`\``)
+        }
+      }
+      if (tabParts.length > 0) {
+        sections.push({
+          id: 'project-files',
+          content: tabParts.join('\n\n'),
+          preserve: false,
+          allowTruncate: true,
+          priority: 5,
+          category: 'selectedFile'
+        })
+      }
     }
 
-    if (selectedFilePath) {
-      const content = getFileContent(selectedFilePath) ?? ''
-      const lineCtx = selectedLineNumber ? ` (cursor line ${selectedLineNumber})` : ''
-      pack(`Active file${lineCtx}: ${selectedFilePath}\n\`\`\`\n${content}\n\`\`\``, 0.35)
+    // Workspace context (lower priority)
+    if (showWorkspaceContext && rootPath) {
+      const contextParts: string[] = []
+      contextParts.push(`[Project root: ${rootPath}]`)
+      
+      if (openTabs.length > 0) {
+        const tabLines = openTabs.slice(0, 8).map((tab) => `- ${tab}`).join('\n')
+        contextParts.push(`--- Open Editor Tabs ---\n${tabLines}`)
+      }
+
+      if (includeSelectedFile && showImportedFiles && selectedFilePath) {
+        const content = getFileContent(selectedFilePath) ?? ''
+        const imports = extractImports(content)
+        if (imports.length > 0) {
+          contextParts.push(`--- Related imports (${getBaseName(selectedFilePath)}) ---\n${imports.join('\n')}`)
+        }
+      }
+
+      if (contextParts.length > 0) {
+        sections.push({
+          id: 'workspace-context',
+          content: contextParts.join('\n\n'),
+          preserve: false,
+          allowTruncate: true,
+          priority: 9,
+          category: 'workspace'
+        })
+      }
     }
 
-    if (userText.startsWith('/fix') && selectedFilePath) {
-      parts.push('Focus: Diagnose and fix bugs, syntax errors, and runtime issues. Output corrected code blocks.')
-    } else if (userText.startsWith('/refactor') && selectedFilePath) {
-      parts.push('Focus: Refactor for readability and maintainability without changing behavior.')
-    } else if (userText.startsWith('/debug') && selectedFilePath) {
-      parts.push('Focus: Add strategic debug logging, trace execution paths, and explain likely failure points.')
-    } else if (userText.startsWith('/optimize') && selectedFilePath) {
-      parts.push('Focus: Improve performance, reduce allocations/complexity, and explain trade-offs.')
-    } else if (userText.startsWith('/generate')) {
-      parts.push('Focus: Generate production-ready code matching project conventions.')
-    } else if (userText.startsWith('/test') && selectedFilePath) {
-      parts.push('Focus: Generate comprehensive unit tests covering edge cases for this file.')
-    } else if (userText.startsWith('/document') && selectedFilePath) {
-      parts.push('Focus: Add JSDoc/TSDoc and inline documentation for public APIs.')
-    }
-
-    parts.push(`User Request:\n${userText}`)
-    return parts.join('\n\n')
+    const promptResult = buildTokenBudgetedPrompt({ sections, promptBudget })
+    return promptResult.prompt
   }, [
     selectedFilePath, selectedLineNumber, rootPath, projectContextMode,
     attachedFiles, openTabs, openrouterModel, dedupedModels, maxTokens, systemPrompt,
+    showWorkspaceContext, showSelectedFile, showImportedFiles, showAttachedFiles, showSystemPrompt,
   ])
 
   // â”€â”€ Actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -734,6 +956,41 @@ export default function NexusAssistant() {
     const updatedMsgs = [...currentHistory, userMsg]
     setMessages(updatedMsgs)
 
+    const oversizedFiles: string[] = []
+    const truncatedFiles: string[] = []
+    for (const filePath of attachedFiles.slice(0, MAX_AI_ATTACHED_FILES)) {
+      const stat = await window.electronAPI?.fs.stat(filePath)
+      if (stat && 'size' in stat && stat.size > MAX_AI_FILE_BYTES) {
+        oversizedFiles.push(filePath)
+      }
+      const fileResult = await window.electronAPI?.fs.readFile(filePath)
+      if (fileResult && 'content' in fileResult && typeof fileResult.content === 'string') {
+        const truncated = truncateFileContent(fileResult.content)
+        if (truncated.truncated) {
+          truncatedFiles.push(filePath)
+        }
+      }
+    }
+
+    if (attachedFiles.length > MAX_AI_ATTACHED_FILES) {
+      addNotification(`AI can only include up to ${MAX_AI_ATTACHED_FILES} attached files.`, 'warning')
+      setIsStreaming(false)
+      return
+    }
+
+    if (oversizedFiles.length > 0 || truncatedFiles.length > 0) {
+      const proceed = await confirm({
+        title: 'AI file safety warning',
+        message: `Some attached files exceed the safe AI limit (${MAX_AI_FILE_BYTES / 1024}KB or ${MAX_AI_FILE_LINES} lines) and will be truncated before sending. Continue?`,
+        confirmText: 'Continue',
+        cancelText: 'Cancel',
+      })
+      if (!proceed) {
+        setIsStreaming(false)
+        return
+      }
+    }
+
     // License check
     const allowed = await window.electronAPI?.license.canUseAI()
     if (!allowed && text.toLowerCase() !== 'im the owner') {
@@ -767,7 +1024,7 @@ export default function NexusAssistant() {
     const payload = {
       streamId,
       prompt: buildPrompt(text),
-      systemPrompt,
+      systemPrompt: showSystemPrompt ? systemPrompt : '',
       model: openrouterModel,
       projectPath: rootPath,
       temperature,
@@ -793,7 +1050,7 @@ export default function NexusAssistant() {
     } catch (err) {
       setMessages([...updatedMsgs, {
         id: streamId, role: 'assistant',
-        content: `âŒ ${err instanceof Error ? err.message : String(err)}`,
+        content: `✖ ${err instanceof Error ? err.message : String(err)}`,
         timestamp: new Date().toISOString(), error: true,
       }])
       setIsStreaming(false)
@@ -802,7 +1059,8 @@ export default function NexusAssistant() {
     }
   }, [
     isStreaming, openrouterModel, rootPath, buildPrompt, systemPrompt,
-    temperature, maxTokens, topP, addNotification, setMessages, setLicenseStatus, addRecent
+    temperature, maxTokens, topP, addNotification, setMessages, setLicenseStatus, addRecent,
+    showSystemPrompt, showAttachedFiles, showSelectedFile, showImportedFiles, showWorkspaceContext
   ])
 
   const handleSend = useCallback(() => {
@@ -859,9 +1117,27 @@ export default function NexusAssistant() {
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
     const paths = files.map((f: any) => f.path).filter(Boolean)
-    if (paths.length) {
-      setAttachedFiles(prev => [...new Set([...prev, ...paths])])
-      addNotification(`Attached ${paths.length} file(s) as context.`, 'info')
+    if (!paths.length) return
+
+    let addedCount = 0
+    setAttachedFiles(prev => {
+      const next = [...prev]
+      const slots = Math.max(0, MAX_AI_ATTACHED_FILES - next.length)
+      for (const p of paths) {
+        if (addedCount >= slots) break
+        if (!next.includes(p)) {
+          next.push(p)
+          addedCount += 1
+        }
+      }
+      return next
+    })
+
+    if (addedCount > 0) {
+      addNotification(`Attached ${addedCount} file(s) as context.`, 'info')
+    }
+    if (addedCount < paths.length) {
+      addNotification(`AI supports up to ${MAX_AI_ATTACHED_FILES} attached files. Extra files were ignored.`, 'warning')
     }
   }
 
@@ -958,7 +1234,7 @@ export default function NexusAssistant() {
                       return (
                         <button
                           key={favId}
-                          onClick={() => { setOpenrouterModel(favId); setShowSelectorDropdown(false) }}
+                          onClick={() => handleModelSwitch(favId)}
                           className={`w-full flex items-center justify-between px-2.5 py-1.5 text-left text-[9px] hover:bg-white/[0.04] ${
                             openrouterModel === favId ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'
                           }`}
@@ -982,7 +1258,7 @@ export default function NexusAssistant() {
                       return (
                         <button
                           key={rId}
-                          onClick={() => { setOpenrouterModel(rId); setShowSelectorDropdown(false) }}
+                          onClick={() => handleModelSwitch(rId)}
                           className={`w-full flex items-center justify-between px-2.5 py-1.5 text-left text-[9px] hover:bg-white/[0.04] ${
                             openrouterModel === rId ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'
                           }`}
@@ -1000,7 +1276,7 @@ export default function NexusAssistant() {
                     {listedModels.map(m => (
                       <button
                         key={m.id}
-                        onClick={() => { setOpenrouterModel(m.id); setShowSelectorDropdown(false) }}
+                        onClick={() => handleModelSwitch(m.id)}
                         className={`w-full flex items-center justify-between px-2.5 py-2 text-left text-[9.5px] hover:bg-white/[0.04] ${
                           openrouterModel === m.id ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'
                         }`}
@@ -1115,6 +1391,106 @@ export default function NexusAssistant() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        <div className="shrink-0 px-3 py-3 bg-[#090b12]/90 border-t border-white/[0.04]">
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {[
+              { label: 'System Prompt', value: showSystemPrompt, setter: setShowSystemPrompt },
+              { label: 'Workspace', value: showWorkspaceContext, setter: setShowWorkspaceContext },
+              { label: 'Attached Files', value: showAttachedFiles, setter: setShowAttachedFiles },
+              { label: 'Selected File', value: showSelectedFile, setter: setShowSelectedFile },
+              { label: 'Imported Files', value: showImportedFiles, setter: setShowImportedFiles },
+            ].map((option) => (
+              <button
+                key={option.label}
+                onClick={() => option.setter((v) => !v)}
+                className={`text-[10px] px-2 py-1 rounded-full border transition ${option.value ? 'bg-[#8b5cf6]/10 border-[#8b5cf6]/20 text-[#c084fc]' : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white'}`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {showSystemPrompt && (
+              <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+                <div className="font-semibold text-slate-100 mb-2">System Prompt</div>
+                <p className="whitespace-pre-wrap max-h-28 overflow-y-auto text-[10px] leading-relaxed">{systemPrompt}</p>
+              </div>
+            )}
+            <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+              <div className="font-semibold text-slate-100 mb-2">User Message</div>
+              <p className="whitespace-pre-wrap max-h-28 overflow-y-auto text-[10px] leading-relaxed">{input || 'No message yet.'}</p>
+            </div>
+            {showAttachedFiles && (
+              <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+                <div className="font-semibold text-slate-100 mb-2">Attached Files</div>
+                {attachedFiles.length > 0 ? (
+                  <ul className="space-y-1 list-disc list-inside text-[10px] text-slate-300">
+                    {attachedFiles.map((path) => <li key={path}>{path}</li>)}
+                  </ul>
+                ) : (
+                  <p className="text-slate-500">No attached files.</p>
+                )}
+              </div>
+            )}
+            {showSelectedFile && (
+              <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+                <div className="font-semibold text-slate-100 mb-2">Selected File</div>
+                {selectedFilePath ? (
+                  <div className="space-y-1">
+                    <p>{selectedFilePath}</p>
+                    {selectedLineNumber && <p className="text-slate-500 text-[9px]">Cursor line: {selectedLineNumber}</p>}
+                  </div>
+                ) : (
+                  <p className="text-slate-500">No active file.</p>
+                )}
+              </div>
+            )}
+            {showImportedFiles && (
+              <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+                <div className="font-semibold text-slate-100 mb-2">Imported Files</div>
+                {selectedFilePath ? (
+                  (() => {
+                    const content = getFileContent(selectedFilePath) || ''
+                    const imports = extractImports(content)
+                    return imports.length > 0 ? (
+                      <ul className="space-y-1 list-disc list-inside text-[10px] text-slate-300">
+                        {imports.slice(0, 12).map((imp, idx) => <li key={`${imp}-${idx}`}>{imp}</li>)}
+                      </ul>
+                    ) : (
+                      <p className="text-slate-500">No imports detected.</p>
+                    )
+                  })()
+                ) : (
+                  <p className="text-slate-500">Open a file to show imports.</p>
+                )}
+              </div>
+            )}
+            {showWorkspaceContext && (
+              <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+                <div className="font-semibold text-slate-100 mb-2">Workspace Context</div>
+                {rootPath ? (
+                  <div className="space-y-1 text-[10px] text-slate-300">
+                    <p>{rootPath}</p>
+                    {openTabs.length > 0 ? (
+                      <ul className="list-disc list-inside space-y-1">
+                        {openTabs.slice(0, 5).map((tab) => <li key={tab}>{tab}</li>)}
+                      </ul>
+                    ) : (
+                      <p className="text-slate-500">No open tabs.</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-slate-500">No workspace open.</p>
+                )}
+              </div>
+            )}
+            <div className="rounded-xl border border-white/[0.05] bg-[#04050a]/80 p-3 text-[10px] text-slate-200">
+              <div className="font-semibold text-slate-100 mb-2">Estimated Tokens</div>
+              <p className="text-slate-300 text-[12px] font-semibold">{Math.ceil(buildPrompt(input).length / 4)}</p>
+            </div>
+          </div>
+        </div>
 
         {/* Context bar */}
         <div className="flex flex-wrap items-center gap-1 px-2.5 py-1.5 bg-black/10 border-b border-white/[0.025] overflow-x-auto scrollbar-none">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Search, Plus, FolderPlus, FolderOpen, Save, Terminal, Sparkles, RefreshCw, FilePlus, FileText, Bug, Settings } from 'lucide-react'
+import { Search, Plus, FolderPlus, FolderOpen, Save, Terminal, Sparkles, RefreshCw, FilePlus, FileText, Bug, Settings, Blocks } from 'lucide-react'
 import { useAppStore } from '../../store/appStore'
 import { useAppModal } from '../ui/ModalDialog'
 import { loadGitStatus } from '../../lib/gitUtils'
@@ -31,6 +31,18 @@ const COMMANDS = [
   { id: 'git-push', label: 'Git: Push', icon: <RefreshCw size={14} /> },
   { id: 'git-status', label: 'Git: Status', icon: <RefreshCw size={14} /> },
   { id: 'open-recent', label: 'Open Recent Project...', icon: <FolderOpen size={14} /> },
+  { id: 'nexa:export-diagnostics', label: 'Nexa: Export Diagnostics', icon: <Bug size={14} /> },
+  { id: 'nexa:open-ai-health', label: 'Nexa: Open AI Health', icon: <Sparkles size={14} /> },
+  { id: 'nexa:refresh-ai-health', label: 'Nexa: Refresh AI Health', icon: <RefreshCw size={14} /> },
+  { id: 'nexa:reset-ai-health', label: 'Nexa: Reset AI Health Metrics', icon: <RefreshCw size={14} /> },
+  { id: 'nexa:open-extensions', label: 'Nexa: Open Extensions', icon: <Blocks size={14} /> },
+  { id: 'nexa:open-extension-marketplace', label: 'Nexa: Browse Extension Marketplace', icon: <Blocks size={14} /> },
+  { id: 'nexa:update-all-extensions', label: 'Nexa: Update All Extensions', icon: <RefreshCw size={14} /> },
+  { id: 'nexa:reload-extensions', label: 'Nexa: Reload Extensions', icon: <RefreshCw size={14} /> },
+  { id: 'nexa:open-diagnostics-folder', label: 'Nexa: Open Diagnostics Folder', icon: <FolderOpen size={14} /> },
+  { id: 'nexa:view-crash-logs', label: 'Nexa: View Crash Logs', icon: <Bug size={14} /> },
+  { id: 'nexa:view-ai-logs', label: 'Nexa: View AI Debug Logs', icon: <Bug size={14} /> },
+  { id: 'nexa:clear-diagnostics', label: 'Nexa: Clear Diagnostics', icon: <RefreshCw size={14} /> },
   { id: 'search-in-files', label: 'Search: Find in Files', icon: <Search size={14} /> },
   { id: 'open-settings', label: 'Open Settings', icon: <Settings size={14} /> },
   { id: 'new-file', label: 'New File', icon: <Plus size={14} /> },
@@ -52,6 +64,8 @@ export default function CommandPalette() {
   const setCommandPaletteMode = useAppStore((s) => s.setCommandPaletteMode)
   const setSidebarOpen = useAppStore((s) => s.setSidebarOpen)
   const setSidebarTab = useAppStore((s) => s.setSidebarTab)
+  const setExtensionsPanelTab = useAppStore((s) => s.setExtensionsPanelTab)
+  const setExtensionsPanelTargetExtensionId = useAppStore((s) => s.setExtensionsPanelTargetExtensionId)
   const setBottomPanelOpen = useAppStore((s) => s.setBottomPanelOpen)
   const setAIPanelOpen = useAppStore((s) => s.setAIPanelOpen)
   const requestAIPanelFocus = useAppStore((s) => s.requestAIPanelFocus)
@@ -233,7 +247,7 @@ export default function CommandPalette() {
   }
 
   const runCommand = useCallback(
-    async (commandId: string) => {
+    async (commandId: string, args: unknown[] = []) => {
       setCommandPaletteOpen(false)
       setQuery('')
 
@@ -248,6 +262,111 @@ export default function CommandPalette() {
         setPaletteMode('command')
         return
       }
+
+        if (commandId === 'nexa:export-diagnostics') {
+          const res = await window.electronAPI?.app.exportDiagnostics()
+          if (res?.success && res.savedTo) {
+            const saved = res.savedTo as string
+            addNotification('Diagnostics exported successfully', 'success', [
+              { label: 'Open Folder', handler: () => window.electronAPI?.app.openDiagnosticsFolder() },
+              { label: 'Reveal ZIP', handler: () => window.electronAPI?.app.revealInFolder(saved) },
+              { label: 'Copy Path', handler: async () => { await window.electronAPI?.app.copyPathToClipboard(saved); addNotification('Path copied to clipboard', 'success') } },
+            ])
+          } else if (res?.canceled) addNotification('Diagnostics export canceled', 'info')
+          else if (res?.error) addNotification(`Export failed: ${res.error}`, 'error')
+          else addNotification('Diagnostics export complete', 'success')
+          return
+        }
+
+      if (commandId === 'nexa:open-ai-health') {
+        setAIPanelOpen(true)
+        requestAIPanelFocus()
+        return
+      }
+
+      if (commandId === 'nexa:open-extensions') {
+        setSidebarOpen(true)
+        setSidebarTab('extensions')
+        return
+      }
+
+      if (commandId === 'nexa:open-extension-marketplace') {
+        setSidebarOpen(true)
+        setSidebarTab('extensions')
+        setExtensionsPanelTab('marketplace')
+        if (args.length > 0 && args[0]) {
+          setExtensionsPanelTargetExtensionId(String(args[0]))
+        }
+        return
+      }
+
+      if (commandId === 'nexa:update-all-extensions') {
+        await window.electronAPI?.extension.updateAllExtensions()
+        addNotification('Extension update check completed.', 'success')
+        return
+      }
+
+      if (commandId === 'nexa:reload-extensions') {
+        await window.electronAPI?.extension.reloadExtensions()
+        addNotification('Reloading extensions...', 'info')
+        return
+      }
+
+      if (commandId === 'nexa:refresh-ai-health') {
+        try {
+          const live = await window.electronAPI?.ai.getLiveSnapshot?.().catch(() => null)
+          if (live) useAppStore.getState().setAiHealthState(live)
+          addNotification('AI Health refreshed', 'success')
+        } catch {
+          addNotification('Failed to refresh AI Health', 'error')
+        }
+        return
+      }
+
+      if (commandId === 'nexa:reset-ai-health') {
+        useAppStore.getState().setAiHealthState({})
+        addNotification('AI Health metrics reset', 'info')
+        return
+      }
+
+        if (commandId === 'nexa:open-diagnostics-folder') {
+          const res = await window.electronAPI?.app.openDiagnosticsFolder()
+          if (res?.success) addNotification(`Opened diagnostics folder: ${res.path}`, 'success')
+          else addNotification(`Failed to open diagnostics folder: ${res?.error ?? 'Unknown'}`, 'error')
+          return
+        }
+
+        if (commandId === 'nexa:view-crash-logs') {
+          const res = await window.electronAPI?.app.getCrashLog()
+          if (res?.content) {
+            await prompt({ title: 'Crash Log', message: res.content.slice(0, 20000), placeholder: '', confirmText: 'Close' })
+          } else {
+            addNotification(`No crash log found: ${res?.error ?? 'None'}`, 'info')
+          }
+          return
+        }
+
+        if (commandId === 'nexa:view-ai-logs') {
+          const res = await window.electronAPI?.app.getAILog()
+          if (res?.logs) {
+            const keys = Object.keys(res.logs)
+            const logs = res.logs as Record<string,string>
+            const preview = keys.map(k => `--- ${k} ---\n${(logs[k]||'').slice(0,10000)}`).join('\n\n')
+            await prompt({ title: 'AI Debug Logs', message: preview, placeholder: '', confirmText: 'Close' })
+          } else {
+            addNotification(`No AI logs found: ${res?.error ?? 'None'}`, 'info')
+          }
+          return
+        }
+
+        if (commandId === 'nexa:clear-diagnostics') {
+          const ok = await confirm({ title: 'Clear Diagnostics', message: 'Remove crash logs and AI debug logs? This cannot be undone.' })
+          if (!ok) return
+          const res = await window.electronAPI?.app.clearDiagnostics()
+          if (res?.success) addNotification(`Cleared diagnostics: ${res.removed?.length ?? 0} files`, 'success')
+          else addNotification(`Failed to clear diagnostics: ${res?.error ?? 'Unknown'}`, 'error')
+          return
+        }
 
       // ── File Mode Selection ────────────────────────────────────────────────
       if (paletteMode === 'file') {

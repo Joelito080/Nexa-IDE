@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../context/AuthProvider'
 import {
   User, LogOut, Key, Eye, EyeOff, Save, RotateCcw,
@@ -98,6 +98,49 @@ export default function SettingsEditor() {
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [keyFromEnv, setKeyFromEnv] = useState(false)
   const [savingApiKey, setSavingApiKey] = useState(false)
+
+  // Sync state
+  const [syncing, setSyncing] = useState(false)
+  const [syncStatus, setSyncStatus] = useState<string | null>(null)
+
+  const handleUploadSync = async () => {
+    if (!user) return
+    setSyncing(true)
+    setSyncStatus('Uploading settings to cloud...')
+    try {
+      const res = await window.electronAPI?.settings.uploadSync(user.accessToken || '')
+      if (res && res.error) {
+        setSyncStatus(`Sync Upload Failed: ${res.error}`)
+      } else {
+        setSyncStatus('Settings uploaded successfully!')
+      }
+    } catch (err: any) {
+      setSyncStatus(`Error: ${err.message}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleDownloadSync = async () => {
+    if (!user) return
+    setSyncing(true)
+    setSyncStatus('Downloading settings from cloud...')
+    try {
+      const res = await window.electronAPI?.settings.downloadSync(user.accessToken || '')
+      if (res && res.error) {
+        setSyncStatus(`Sync Download Failed: ${res.error}`)
+      } else if (res && res.settings) {
+        setSyncStatus('Settings downloaded and applied successfully!')
+        window.location.reload()
+      } else {
+        setSyncStatus('No remote settings found on cloud.')
+      }
+    } catch (err: any) {
+      setSyncStatus(`Error: ${err.message}`)
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   // Diagnostics states
   const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
@@ -721,6 +764,45 @@ export default function SettingsEditor() {
                   className="w-4 h-4 rounded border-white/10 bg-black/40 accent-[#8b5cf6] cursor-pointer mt-1"
                 />
               </div>
+            </section>
+
+            {/* Cloud Settings Sync */}
+            <section className="bg-white/[0.03] border border-white/5 rounded-2xl p-6 space-y-6">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2 pb-3 border-b border-white/5">
+                <RefreshCw size={16} className="text-[#8b5cf6]" /> Cloud Settings Sync
+              </h2>
+              {user ? (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-400">
+                    Logged in as <strong className="text-white">{user.displayName || user.email}</strong>. Synchronize your settings, themes, keyboard shortcuts, and installed extensions list to the cloud.
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleUploadSync}
+                      disabled={syncing}
+                      className="px-4 py-2 rounded-xl bg-[#8b5cf6] hover:bg-[#7c3aed] text-white text-xs font-bold transition disabled:opacity-50 flex items-center gap-2"
+                    >
+                      <Upload size={14} /> Upload Sync
+                    </button>
+                    <button
+                      onClick={handleDownloadSync}
+                      disabled={syncing}
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold transition disabled:opacity-50 flex items-center gap-2"
+                    >
+                      <Download size={14} /> Download Sync
+                    </button>
+                  </div>
+                  {syncStatus && (
+                    <p className="text-[11px] text-[#a78bfa] italic">{syncStatus}</p>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 bg-black/30 border border-white/5 rounded-xl">
+                  <p className="text-xs text-slate-400">
+                    Settings Sync is disabled. Please <strong className="text-white">Sign In</strong> via the profile account menu to synchronize settings, keybindings, and extensions across your devices.
+                  </p>
+                </div>
+              )}
             </section>
 
             {/* Advanced Settings */}

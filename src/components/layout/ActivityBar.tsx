@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
+import type { CSSProperties } from 'react'
 import {
   Files, Search, GitBranch, Bug,
   Blocks, Settings2, Bot, Database,
@@ -48,7 +49,7 @@ function ActivityIcon({ tab, isActive, onClick }: {
             <motion.div
               layoutId="activity-indicator"
               className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-6 rounded-r-full"
-              style={{ background: 'linear-gradient(180deg, #a78bfa, #818cf8)' }}
+              style={{ background: 'linear-gradient(180deg, #a78bfa, #818cf8)' } as CSSProperties}
               initial={{ opacity: 0, scaleY: 0 }}
               animate={{ opacity: 1, scaleY: 1 }}
               exit={{ opacity: 0, scaleY: 0 }}

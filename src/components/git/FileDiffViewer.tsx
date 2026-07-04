@@ -148,7 +148,7 @@ export default function FileDiffViewer({ projectPath, filePath, isStaged = false
               enableSplitViewResizing: true,
               ignoreTrimWhitespace: false,
             }}
-            onMount={(editor) => {
+            onMount={(editor: any) => {
               editorRef.current = editor
             }}
           />

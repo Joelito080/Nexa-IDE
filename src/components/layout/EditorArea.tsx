@@ -1,4 +1,5 @@
-﻿import { motion } from 'framer-motion'
+import { motion } from 'framer-motion'
+import type { CSSProperties } from 'react'
 import Editor from '@monaco-editor/react'
 import {
   FolderOpen, FilePlus, GitBranch, Terminal as TerminalIcon,
@@ -133,7 +134,7 @@ interface Feature {
 }
 
 const FEATURES: Feature[] = [
-  { icon: <Bot size={15} />,     title: 'AI-First',     desc: 'NEXUS Â· OpenRouter' },
+  { icon: <Bot size={15} />,     title: 'AI-First',     desc: 'NEXA Â· OpenRouter' },
   { icon: <Code2 size={15} />,   title: 'Monaco',       desc: 'VS Code engine'          },
   { icon: <Zap size={15} />,     title: 'Fast',         desc: 'Vite + Electron'         },
   { icon: <Cpu size={15} />,     title: '100+ Models',  desc: 'OpenRouter catalog'      },
@@ -1127,7 +1128,7 @@ const EditorArea = memo(function EditorArea() {
             <div className="flex items-center justify-center gap-2 mt-2.5">
               <div className="active-dot" />
               <span className="text-[10px] text-[#4ade80] font-semibold tracking-wide">
-                NEXUS AI Â· OpenRouter Â· active
+                NEXA AI Â· OpenRouter Â· active
               </span>
             </div>
           </div>
@@ -1171,7 +1172,7 @@ const EditorArea = memo(function EditorArea() {
                   style={{
                     background: 'rgba(13, 14, 22, 0.65)',
                     border: '1px solid rgba(139, 92, 246, 0.08)',
-                  }}
+                  } as CSSProperties}
                   onMouseEnter={(e) => {
                     ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(139, 92, 246, 0.3)'
                     ;(e.currentTarget as HTMLElement).style.background  = 'rgba(139, 92, 246, 0.06)'
@@ -1237,7 +1238,7 @@ const EditorArea = memo(function EditorArea() {
                     style={{
                       background: 'rgba(13, 14, 22, 0.65)',
                       borderColor: 'rgba(139, 92, 246, 0.08)',
-                    }}
+                    } as CSSProperties}
                     onMouseEnter={(e) => {
                       ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(139, 92, 246, 0.3)'
                       ;(e.currentTarget as HTMLElement).style.background  = 'rgba(139, 92, 246, 0.06)'
@@ -1297,7 +1298,7 @@ const EditorArea = memo(function EditorArea() {
               style={{
                 background: 'rgba(13, 14, 22, 0.85)',
                 border: '1px solid rgba(139, 92, 246, 0.13)',
-              }}
+              } as CSSProperties}
             >
               <span className="text-[#8b5cf6]">{feat.icon}</span>
               <span className="text-[#94a3b8] font-semibold">{feat.title}</span>

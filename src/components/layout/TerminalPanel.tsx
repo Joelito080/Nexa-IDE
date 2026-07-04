@@ -35,7 +35,7 @@ export default function TerminalPanel({ onClose }: { onClose: () => void }) {
   const [lastError, setLastError] = useState<string | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const xtermRef = useRef<XTerm | null>(null)
+  const xtermRef = useRef<any | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const pendingOutputRef = useRef('')
@@ -86,7 +86,7 @@ export default function TerminalPanel({ onClose }: { onClose: () => void }) {
       xtermRef.current.write(restored)
       xtermRef.current.writeln('\r\n\x1b[90m[Session restored from crash recovery]\x1b[0m\r\n')
     } else {
-      xtermRef.current.writeln(`\x1b[90mNEXUS Terminal — ${shell} [${mode}]\x1b[0m`)
+      xtermRef.current.writeln(`\x1b[90mNEXA Terminal — ${shell} [${mode}]\x1b[0m`)
       xtermRef.current.writeln(`\x1b[90mWorkspace: ${cwd}\x1b[0m\r\n`)
     }
     
@@ -123,7 +123,7 @@ export default function TerminalPanel({ onClose }: { onClose: () => void }) {
     xtermRef.current = term
     fitAddonRef.current = fitAddon
 
-    term.onData((data) => {
+    term.onData((data: any) => {
       const sid = sessionIdRef.current
       if (sid) window.electronAPI?.terminal.write(sid, data)
     })

@@ -199,8 +199,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ai: {
     /** Non-streaming single-shot chat request. */
     chat: (payload: unknown) => ipcRenderer.invoke('ai:chat', payload),
+    openDiagnosticsFolder: (): Promise<any> => ipcRenderer.invoke('app:openDiagnosticsFolder'),
+    getLastCrash: (): Promise<any> => ipcRenderer.invoke('app:getLastCrash'),
 
     /** Start a real streaming request.
+    getCrashLog: (): Promise<any> => ipcRenderer.invoke('app:getCrashLog'),
+    getAILog: (): Promise<any> => ipcRenderer.invoke('app:getAILog'),
+    clearDiagnostics: (): Promise<any> => ipcRenderer.invoke('app:clearDiagnostics'),
      *  Returns { started: true, streamId } immediately.
      *  Chunks arrive via onChunk / onEnd / onError listeners. */
     streamStart: (payload: unknown) => ipcRenderer.invoke('ai:stream:start', payload),
@@ -252,16 +257,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: (extensionId: string) => ipcRenderer.invoke('extension:uninstall', extensionId),
     listCommands: () => ipcRenderer.invoke('extension:listCommands'),
     runCommand: (commandId: string, ...args: unknown[]) => ipcRenderer.invoke('extension:runCommand', commandId, ...args),
-  },
-
-  // ── Project Templates / Workspace Services ────────────────────────────────────
-  project: {
-    listTemplates: () => ipcRenderer.invoke('project:listTemplates'),
-    findTemplate: (prompt: string) => ipcRenderer.invoke('project:findTemplate', prompt),
-    create: (projectRoot: string, templateId: string, projectName: string) => ipcRenderer.invoke('project:create', projectRoot, templateId, projectName),
-    installDependencies: (projectPath: string) => ipcRenderer.invoke('project:installDependencies', projectPath),
-    analyzeWorkspace: (projectPath: string | null) => ipcRenderer.invoke('project:analyzeWorkspace', projectPath),
-    createDeployConfig: (projectPath: string, provider: string) => ipcRenderer.invoke('project:createDeployConfig', projectPath, provider),
+      checkForUpdates: () => ipcRenderer.invoke('extension:checkForUpdates'),
+      updateExtension: (extensionId: string) => ipcRenderer.invoke('extension:updateExtension', extensionId),
+      updateAllExtensions: () => ipcRenderer.invoke('extension:updateAllExtensions'),
+      clearQuarantine: (extensionId: string) => ipcRenderer.invoke('extension:clearQuarantine', extensionId),
+      reloadExtensions: () => ipcRenderer.invoke('extension:reloadExtensions'),
     clone: (repoUrl: string) => ipcRenderer.invoke('project:clone', repoUrl),
     new: () => ipcRenderer.invoke('project:new'),
   },
@@ -310,6 +310,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   settings: {
     load: () => ipcRenderer.invoke('settings:load'),
     save: (settings: Record<string, unknown>) => ipcRenderer.invoke('settings:save', settings),
+    uploadSync: (accessToken: string): Promise<any> => ipcRenderer.invoke('settings:uploadSync', accessToken),
+    downloadSync: (accessToken: string): Promise<any> => ipcRenderer.invoke('settings:downloadSync', accessToken),
   },
 
   app: {
@@ -319,7 +321,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     logRendererError: (projectPath: string | null, error: string, stack?: string): Promise<any> =>
       ipcRenderer.invoke('app:logRendererError', { projectPath, error, stack }),
     allowPath: (dirPath: string) => ipcRenderer.send('app:allowPath', dirPath),
+    isSafeMode: (): Promise<boolean> => ipcRenderer.invoke('app:isSafeMode'),
+    relaunchNormal: (): Promise<any> => ipcRenderer.invoke('app:relaunchNormal'),
+    relaunchSafe: (): Promise<any> => ipcRenderer.invoke('app:relaunchSafe'),
+    exportDiagnostics: (): Promise<any> => ipcRenderer.invoke('app:exportDiagnostics'),
+    getCrashMetadata: (): Promise<{ crashMetadata: { source: string; reason: string; details?: string; timestamp: string } | null }> =>
+      ipcRenderer.invoke('app:getCrashMetadata'),
+    clearCrashMetadata: (): Promise<any> => ipcRenderer.invoke('app:clearCrashMetadata'),
+    getCrashHistory: (): Promise<{ history?: any[]; error?: string }> => ipcRenderer.invoke('app:getCrashHistory'),
+    clearCrashHistory: (): Promise<{ success?: true; error?: string }> => ipcRenderer.invoke('app:clearCrashHistory'),
   },
+
+  // Reveal a file in folder using shell.showItemInFolder
+  revealInFolder: (filePath: string): Promise<any> => ipcRenderer.invoke('app:revealInFolder', filePath),
+  // Copy a path to clipboard via main process
+  copyPathToClipboard: (filePath: string): Promise<any> => ipcRenderer.invoke('app:copyPathToClipboard', filePath),
 
   logs: {
     openFolder: (projectPath: string | null): Promise<any> =>
@@ -351,7 +367,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     onDone: (callback: (searchId: string, totalResults: number) => void) => {
       const handler = (_: IpcRendererEvent, searchId: string, totalResults: number) =>
-        callback(searchId, totalResults)
       ipcRenderer.on('search:done', handler)
       return () => ipcRenderer.removeListener('search:done', handler)
     },

@@ -283,6 +283,9 @@ export async function askAIStream(
   callbacks: StreamCallbacks,
   streamId?: string,
 ): Promise<void> {
+  const start = performance.now()
+  let hasSentToken = false
+
   const ctrl = new AbortController()
   if (streamId) activeStreams.set(streamId, ctrl)
 
@@ -296,10 +299,31 @@ export async function askAIStream(
     userSignal.addEventListener('abort', () => ctrl.abort(), { once: true })
   }
 
+  const wrappedCallbacks: StreamCallbacks = {
+    ...callbacks,
+    onChunk: (chunk: string) => {
+      if (!hasSentToken) {
+        hasSentToken = true
+        const ttft = Math.round(performance.now() - start)
+        import('./telemetry').then(({ telemetry }) => {
+          telemetry.trackEvent('ai-latency', { type: 'streaming-ttft', durationMs: ttft })
+        }).catch(() => {})
+      }
+      callbacks.onChunk(chunk)
+    },
+    onDone: (fullText: string, metrics: any) => {
+      const totalDuration = Math.round(performance.now() - start)
+      import('./telemetry').then(({ telemetry }) => {
+        telemetry.trackEvent('ai-latency', { type: 'streaming-total', durationMs: totalDuration })
+      }).catch(() => {})
+      callbacks.onDone(fullText, metrics)
+    }
+  }
+
   try {
-    await runFreeAiFallbackStream(prompt, options, callbacks, ctrl.signal)
+    await runFreeAiFallbackStream(prompt, options, wrappedCallbacks, ctrl.signal)
   } catch (err) {
-    callbacks.onError(sanitizeErrorMessage((err as Error).message))
+    wrappedCallbacks.onError(sanitizeErrorMessage((err as Error).message))
   } finally {
     if (streamId) activeStreams.delete(streamId)
   }
@@ -718,13 +742,18 @@ function isOpenRouterFallbackError(err: unknown): boolean {
 // ─── Non-streaming ───────────────────────────────────────────────────────────
 
 export async function askAI(prompt: string, options: AIRequestOptions = {}) {
+  const start = performance.now()
+  let resp: string
   if (!isOpenRouterKeyConfigured()) {
-    const resp = await generateFreeAiResponse(prompt, options)
-    return { success: true, response: resp }
+    resp = await generateFreeAiResponse(prompt, options)
+  } else {
+    resp = await generateFreeAiResponse(prompt, options)
   }
-
-  const apiKey = getOpenRouterKey()
-  const resp = await generateFreeAiResponse(prompt, options)
+  const durationMs = Math.round(performance.now() - start)
+  try {
+    const { telemetry } = await import('./telemetry')
+    await telemetry.trackEvent('ai-latency', { type: 'non-streaming', durationMs })
+  } catch {}
   return { success: true, response: resp }
 }
 

@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Download,
@@ -33,6 +33,7 @@ export default function App() {
   const [detectedOS, setDetectedOS] = useState<'windows' | 'mac' | 'linux'>('windows')
   const [downloadDropdownOpen, setDownloadDropdownOpen] = useState(false)
   const [activeModal, setActiveModal] = useState<'terms' | 'privacy' | null>(null)
+  const [currentTab, setCurrentTab] = useState<'home' | 'download' | 'marketplace' | 'docs' | 'roadmap' | 'changelog'>('home')
   const [releaseInfo, setReleaseInfo] = useState<ReleaseData>({
     version: 'v1.1.0',
     publishDate: '2026-06-27',
@@ -195,31 +196,27 @@ Would you like me to automatically apply this refactoring across the file?`
           </a>
 
           <div className="hidden md:flex items-center gap-8 text-[13px] font-semibold text-slate-400">
-            <a href="#features" className="hover:text-white transition-colors">Features</a>
-            <a href="#ai-showcase" className="hover:text-white transition-colors">AI Assistant</a>
-            <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
-            <a href="#downloads" className="hover:text-white transition-colors">Downloads</a>
-            <a
-              href="https://github.com/nexa-ide/nexa-ide"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 hover:text-white transition-colors"
-            >
-              <Github size={14} /> GitHub
-            </a>
+            <button onClick={() => setCurrentTab('home')} className={`hover:text-white transition-colors ${currentTab === 'home' ? 'text-white font-bold text-brand-violet' : ''}`}>Home</button>
+            <button onClick={() => setCurrentTab('download')} className={`hover:text-white transition-colors ${currentTab === 'download' ? 'text-white font-bold text-brand-violet' : ''}`}>Download</button>
+            <button onClick={() => setCurrentTab('marketplace')} className={`hover:text-white transition-colors ${currentTab === 'marketplace' ? 'text-white font-bold text-brand-violet' : ''}`}>Marketplace</button>
+            <button onClick={() => setCurrentTab('docs')} className={`hover:text-white transition-colors ${currentTab === 'docs' ? 'text-white font-bold text-brand-violet' : ''}`}>Docs</button>
+            <button onClick={() => setCurrentTab('roadmap')} className={`hover:text-white transition-colors ${currentTab === 'roadmap' ? 'text-white font-bold text-brand-violet' : ''}`}>Roadmap</button>
+            <button onClick={() => setCurrentTab('changelog')} className={`hover:text-white transition-colors ${currentTab === 'changelog' ? 'text-white font-bold text-brand-violet' : ''}`}>Changelog</button>
           </div>
 
-          <a
-            href="#downloads"
+          <button
+            onClick={() => setCurrentTab('download')}
             className="px-4 py-2 rounded-xl bg-brand-accent/15 hover:bg-brand-accent/25 border border-brand-accent/30 text-brand-violet text-xs font-bold transition-all shadow-[0_0_15px_rgba(139,92,246,0.1)] hover:shadow-[0_0_20px_rgba(139,92,246,0.2)]"
           >
             Get Free IDE
-          </a>
+          </button>
         </div>
       </nav>
 
       {/* Hero Section */}
-      <section className="relative z-10 pt-20 pb-16 px-6 max-w-7xl mx-auto flex flex-col items-center text-center">
+      {currentTab === 'home' && (
+        <>
+          <section className="relative z-10 pt-20 pb-16 px-6 max-w-7xl mx-auto flex flex-col items-center text-center">
         <motion.div
           initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
@@ -895,6 +892,28 @@ Would you like me to automatically apply this refactoring across the file?`
           </div>
         </div>
       </section>
+        </>
+      )}
+
+      {currentTab === 'download' && (
+        <DownloadPage getDownloadLink={getDownloadLink} detectedOS={detectedOS} releaseInfo={releaseInfo} />
+      )}
+
+      {currentTab === 'marketplace' && (
+        <MarketplacePage />
+      )}
+
+      {currentTab === 'docs' && (
+        <DocsPage />
+      )}
+
+      {currentTab === 'roadmap' && (
+        <RoadmapPage />
+      )}
+
+      {currentTab === 'changelog' && (
+        <ChangelogPage releaseInfo={releaseInfo} />
+      )}
 
       {/* Footer */}
       <footer className="py-12 border-t border-brand-border bg-[#030508]/80 text-center text-slate-500 text-xs relative z-10 select-none">
@@ -967,6 +986,398 @@ Would you like me to automatically apply this refactoring across the file?`
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+function DownloadPage({ getDownloadLink, detectedOS, releaseInfo }: any) {
+  const [copiedText, setCopiedText] = useState<string | null>(null)
+  const copyCommand = (cmd: string, key: string) => {
+    navigator.clipboard.writeText(cmd)
+    setCopiedText(key)
+    setTimeout(() => setCopiedText(null), 2000)
+  }
+
+  return (
+    <section className="relative z-10 pt-16 pb-24 px-6 max-w-7xl mx-auto flex flex-col items-center">
+      <h1 className="text-4xl md:text-5xl font-extrabold text-white mb-4">Download NEXA IDE</h1>
+      <p className="text-slate-400 text-sm max-w-2xl text-center mb-12">
+        Experience a fast, secure, local-first code editor with integrated AI assistance. All builds are digitally signed and verified.
+      </p>
+
+      {/* Main Download Card */}
+      <div className="w-full max-w-3xl bg-[#090b11]/80 border border-white/5 rounded-3xl p-8 mb-16 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-8">
+          <div className="space-y-4 text-left">
+            <span className="px-3 py-1 rounded-full bg-brand-accent/10 border border-brand-accent/20 text-brand-violet text-[10px] font-bold uppercase">
+              Recommended for your system
+            </span>
+            <h2 className="text-2xl font-bold text-white uppercase tracking-wide">
+              Nexa IDE for {detectedOS}
+            </h2>
+            <p className="text-slate-400 text-xs max-w-md">
+              Download the fully packaged setup. Digital code signatures are validated on installation.
+            </p>
+            <div className="text-[11px] text-slate-500 space-y-1">
+              <p>Version: <span className="text-white font-bold">{releaseInfo.version}</span></p>
+              <p>Release Date: <span className="text-slate-300">{releaseInfo.publishDate}</span></p>
+            </div>
+          </div>
+
+          <a
+            href={getDownloadLink(detectedOS)}
+            className="w-full md:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-brand-violet to-brand-indigo hover:from-brand-violet/90 hover:to-brand-indigo/90 text-white font-bold text-sm shadow-[0_0_30px_rgba(139,92,246,0.3)] transition flex items-center justify-center gap-3 shrink-0"
+          >
+            <Download size={18} /> Download for {detectedOS === 'windows' ? 'Windows (x64)' : detectedOS === 'mac' ? 'macOS (Intel/Apple)' : 'Linux (AppImage)'}
+          </a>
+        </div>
+      </div>
+
+      {/* Grid of Other OS Builds */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-5xl mb-20">
+        {/* Windows Card */}
+        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-6 flex flex-col justify-between items-start text-left space-y-4">
+          <div className="space-y-2">
+            <h3 className="font-bold text-white text-base">Windows Setup</h3>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Digitally signed Windows Installer (Signtool signed). Includes auto-update blockmaps.
+            </p>
+          </div>
+          <a href={getDownloadLink('windows')} className="text-brand-violet hover:underline text-xs font-bold flex items-center gap-1.5">
+            <Download size={12} /> Download .exe
+          </a>
+        </div>
+
+        {/* macOS Card */}
+        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-6 flex flex-col justify-between items-start text-left space-y-4">
+          <div className="space-y-2">
+            <h3 className="font-bold text-white text-base">macOS DMG</h3>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Universal Apple Silicon & Intel setup. Fully notarized and validated by Apple Gatekeeper.
+            </p>
+          </div>
+          <a href={getDownloadLink('mac')} className="text-brand-violet hover:underline text-xs font-bold flex items-center gap-1.5">
+            <Download size={12} /> Download .dmg
+          </a>
+        </div>
+
+        {/* Linux Card */}
+        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-6 flex flex-col justify-between items-start text-left space-y-4">
+          <div className="space-y-2">
+            <h3 className="font-bold text-white text-base">Linux AppImage</h3>
+            <p className="text-slate-400 text-[11px] leading-relaxed">
+              Portable AppImage package compatible with Ubuntu, Debian, Fedora, and Arch.
+            </p>
+          </div>
+          <a href={getDownloadLink('linux')} className="text-brand-violet hover:underline text-xs font-bold flex items-center gap-1.5">
+            <Download size={12} /> Download .AppImage
+          </a>
+        </div>
+      </div>
+
+      {/* Checksum & Integrity Validation Section */}
+      <div className="w-full max-w-4xl text-left bg-black/40 border border-white/5 rounded-3xl p-8 space-y-6">
+        <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <Shield size={20} className="text-brand-violet" /> Verify Installer Integrity
+        </h2>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          To ensure your download has not been tampered with, you can verify the installer checksum by running the corresponding command in your terminal and comparing it with the published value inside <strong className="text-white">latest.yml</strong>.
+        </p>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-[11px] font-bold text-white">Windows (PowerShell)</p>
+            <div className="flex items-center justify-between p-3 bg-black/50 border border-white/5 rounded-xl text-slate-300 font-mono text-[10px] overflow-x-auto gap-4">
+              <span>Get-FileHash -Path .\NEXA.IDE.Setup.exe -Algorithm SHA512</span>
+              <button
+                onClick={() => copyCommand('Get-FileHash -Path .\\NEXA.IDE.Setup.exe -Algorithm SHA512', 'win')}
+                className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[10px] text-white font-bold transition shrink-0"
+              >
+                {copiedText === 'win' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[11px] font-bold text-white">macOS / Linux (Bash/Zsh)</p>
+            <div className="flex items-center justify-between p-3 bg-black/50 border border-white/5 rounded-xl text-slate-300 font-mono text-[10px] overflow-x-auto gap-4">
+              <span>shasum -a 512 NEXA.IDE.dmg</span>
+              <button
+                onClick={() => copyCommand('shasum -a 512 NEXA.IDE.dmg', 'mac')}
+                className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[10px] text-white font-bold transition shrink-0"
+              >
+                {copiedText === 'mac' ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function MarketplacePage() {
+  const [search, setSearch] = useState('')
+  const extensions = [
+    { id: 'git-lens', name: 'Git Lens', description: 'Advanced git commit histories, inline blames, and branch trees.', author: 'Nexa Team', downloads: '14.2k', rating: 4.8 },
+    { id: 'python-copilot', name: 'Python Copilot', description: 'Interactive autocomplete and auto-documentation for Python files.', author: 'Copilot Devs', downloads: '8.9k', rating: 4.6 },
+    { id: 'db-viewer', name: 'Database Viewer', description: 'Connect, run queries, and preview tables directly inside your editor.', author: 'Data Tools', downloads: '6.4k', rating: 4.7 },
+    { id: 'prettier', name: 'Prettier Formatter', description: 'Consistently format JavaScript, TypeScript, HTML, CSS code on save.', author: 'Prettier Inc', downloads: '25.3k', rating: 4.9 },
+    { id: 'vim-simulator', name: 'Vim Mode', description: 'Full modal editing capability mimicking standard Vim keystrokes.', author: 'Editor Pros', downloads: '5.1k', rating: 4.5 },
+    { id: 'docker-mgr', name: 'Docker Manager', description: 'Inspect containers, view image layers, and trigger rebuild pipelines.', author: 'Cloud DevOps', downloads: '3.8k', rating: 4.6 }
+  ]
+
+  const filtered = extensions.filter(e => e.name.toLowerCase().includes(search.toLowerCase()) || e.description.toLowerCase().includes(search.toLowerCase()))
+
+  return (
+    <section className="relative z-10 pt-16 pb-24 px-6 max-w-7xl mx-auto flex flex-col items-center">
+      <h1 className="text-4xl md:text-5xl font-extrabold text-white mb-4">Extension Marketplace</h1>
+      <p className="text-slate-400 text-sm max-w-2xl text-center mb-12">
+        Customize your coding workspace with verified plugins and themes. Built on isolated sandboxed runtimes.
+      </p>
+
+      {/* Search Bar */}
+      <div className="w-full max-w-md mb-12">
+        <input
+          type="text"
+          placeholder="Search extensions..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full px-4 py-3 rounded-2xl bg-[#090b11]/85 border border-white/10 text-slate-300 text-sm focus:border-brand-violet outline-none transition"
+        />
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-6xl">
+        {filtered.map(e => (
+          <div key={e.id} className="bg-white/[0.02] border border-white/5 rounded-3xl p-6 flex flex-col justify-between items-start text-left space-y-4 shadow-lg hover:border-white/10 transition">
+            <div className="space-y-2 w-full">
+              <div className="flex justify-between items-start">
+                <h3 className="font-bold text-white text-base">{e.name}</h3>
+                <span className="text-[10px] text-slate-500 font-semibold">{e.downloads} installs</span>
+              </div>
+              <p className="text-slate-400 text-xs leading-relaxed min-h-12">
+                {e.description}
+              </p>
+            </div>
+            <div className="flex justify-between items-center w-full pt-4 border-t border-white/5">
+              <span className="text-[11px] text-slate-500">By {e.author}</span>
+              <button className="px-3.5 py-1.5 rounded-xl bg-brand-accent/15 hover:bg-brand-accent/25 border border-brand-accent/30 text-brand-violet text-[11px] font-bold transition">
+                Install
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function DocsPage() {
+  const [activeGuide, setActiveGuide] = useState<'start' | 'config' | 'api' | 'sync'>('start')
+
+  return (
+    <section className="relative z-10 pt-16 pb-24 px-6 max-w-7xl mx-auto flex flex-col md:flex-row gap-12 text-left">
+      {/* Sidebar */}
+      <div className="w-full md:w-64 space-y-1.5 shrink-0 select-none">
+        <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider pl-3 mb-3">User Guides</h3>
+        <button
+          onClick={() => setActiveGuide('start')}
+          className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold transition ${activeGuide === 'start' ? 'bg-[#8b5cf6]/10 text-brand-violet' : 'text-slate-400 hover:text-white'}`}
+        >
+          Getting Started
+        </button>
+        <button
+          onClick={() => setActiveGuide('config')}
+          className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold transition ${activeGuide === 'config' ? 'bg-[#8b5cf6]/10 text-brand-violet' : 'text-slate-400 hover:text-white'}`}
+        >
+          Configuration Guide
+        </button>
+        <button
+          onClick={() => setActiveGuide('api')}
+          className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold transition ${activeGuide === 'api' ? 'bg-[#8b5cf6]/10 text-brand-violet' : 'text-slate-400 hover:text-white'}`}
+        >
+          Extension API Reference
+        </button>
+        <button
+          onClick={() => setActiveGuide('sync')}
+          className={`w-full text-left px-3 py-2 rounded-xl text-xs font-semibold transition ${activeGuide === 'sync' ? 'bg-[#8b5cf6]/10 text-brand-violet' : 'text-slate-400 hover:text-white'}`}
+        >
+          Cloud Settings Sync
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 bg-[#090b11]/50 border border-white/5 rounded-3xl p-8 shadow-2xl leading-relaxed">
+        {activeGuide === 'start' && (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-white">Getting Started with Nexa IDE</h2>
+            <p className="text-slate-300 text-xs">
+              Welcome to Nexa IDE. Get set up in three easy steps:
+            </p>
+            <ol className="list-decimal pl-5 text-xs text-slate-400 space-y-2">
+              <li>Download the executable for your platform from the Download tab.</li>
+              <li>Launch the setup installer. Digital code signatures are verified automatically.</li>
+              <li>Set up your OpenRouter API key inside settings to enable full multi-model AI code assistance.</li>
+            </ol>
+            <div className="p-4 bg-black/40 border border-white/5 rounded-xl space-y-2">
+              <p className="text-[11px] font-bold text-white">Key Keyboard Shortcuts</p>
+              <ul className="text-[10px] text-slate-400 space-y-1">
+                <li><strong className="text-white">Ctrl + Shift + P</strong>: Open Command Palette</li>
+                <li><strong className="text-white">Ctrl + `</strong>: Open Integrated Terminal</li>
+                <li><strong className="text-white">Ctrl + I</strong>: Open Nexa AI Chat Sidebar</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {activeGuide === 'config' && (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-white">Configuration</h2>
+            <p className="text-slate-300 text-xs">
+              Configurations in Nexa IDE are stored locally inside a JSON configuration file.
+            </p>
+            <pre className="p-4 bg-black/60 border border-white/5 rounded-xl text-slate-300 font-mono text-[10px] overflow-x-auto">
+{`{
+  "editorTheme": "dark-classic",
+  "editorFontSize": 14,
+  "editorMinimap": true,
+  "telemetryEnabled": false,
+  "updateChannel": "stable"
+}`}
+            </pre>
+            <p className="text-xs text-slate-400">
+              You can override these values inside preferences or sync them with the cloud using Cloud Sync.
+            </p>
+          </div>
+        )}
+
+        {activeGuide === 'api' && (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-white">Extension API Reference</h2>
+            <p className="text-slate-300 text-xs">
+              Build extensions using sandboxed javascript modules. Write an `activate` function in your main package:
+            </p>
+            <pre className="p-4 bg-black/60 border border-white/5 rounded-xl text-slate-300 font-mono text-[10px] overflow-x-auto">
+{`module.exports = {
+  activate(context) {
+    console.log("Extension successfully activated!");
+    context.registerCommand({
+      id: "myExtension.helloWorld",
+      title: "Hello World"
+    }, () => {
+      console.log("Hello from Nexa IDE!");
+    });
+  }
+}`}
+            </pre>
+            <p className="text-xs text-slate-400">
+              Your extension has access to isolated APIs for registers, workspaces, and editor context.
+            </p>
+          </div>
+        )}
+
+        {activeGuide === 'sync' && (
+          <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-white">Cloud Settings Sync</h2>
+            <p className="text-slate-300 text-xs">
+              Cloud Settings Sync allows you to synchronize your settings, themes, and extensions lists across multiple devices.
+            </p>
+            <p className="text-xs text-slate-400">
+              To trigger settings sync:
+            </p>
+            <ul className="list-disc pl-5 text-xs text-slate-400 space-y-1">
+              <li>Log in with your user profile via the account menu.</li>
+              <li>Go to <strong className="text-white">Settings &gt; Cloud Settings Sync</strong>.</li>
+              <li>Click <strong className="text-white">Upload Sync</strong> or <strong className="text-white">Download Sync</strong> to pull cloud values.</li>
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function RoadmapPage() {
+  const milestones = [
+    { title: 'v1.0.0 Release', desc: 'Launched core IDE shell, local sandbox extension host, and Safe Mode arguments.', date: 'Q1 2026', status: 'shipped' },
+    { title: 'v1.1.0 Rebrand & AI Update', desc: 'Rebranded to Nexa IDE, added streaming completions and OpenRouter API key routing.', date: 'Q2 2026', status: 'current' },
+    { title: 'Settings Sync & Opt-in Telemetry', desc: 'Support cloud setting syncs, keybindings, and telemetry opt-in consent controls.', date: 'Q3 2026', status: 'planned' },
+    { title: 'Collaborative Workspaces', desc: 'Multiplayer collaborative sessions and remote editor backend mounts.', date: 'Q4 2026', status: 'planned' },
+    { title: 'v2.0 Autonomous AI Agent', desc: 'Deep background coding agent loops running in local terminal shells.', date: '2027', status: 'planned' }
+  ]
+
+  return (
+    <section className="relative z-10 pt-16 pb-24 px-6 max-w-4xl mx-auto flex flex-col items-center">
+      <h1 className="text-4xl md:text-5xl font-extrabold text-white mb-4">Nexa IDE Roadmap</h1>
+      <p className="text-slate-400 text-sm max-w-2xl text-center mb-16">
+        Follow our progress as we scale Nexa IDE from a local-first editor to a collaborative, AI-agentic playground.
+      </p>
+
+      <div className="space-y-12 relative before:absolute before:left-4 before:top-2 before:bottom-2 before:w-[2px] before:bg-white/10 w-full text-left">
+        {milestones.map((m, idx) => (
+          <div key={idx} className="relative pl-12">
+            <div className={`absolute left-[10px] top-1.5 w-4 h-4 rounded-full border-4 border-brand-bg transition-all ${m.status === 'shipped' ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : m.status === 'current' ? 'bg-[#8b5cf6] shadow-[0_0_10px_rgba(139,92,246,0.5)]' : 'bg-slate-700'}`} />
+            <div className="space-y-2">
+              <span className="text-[10px] text-slate-500 font-bold uppercase">{m.date}</span>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                {m.title}
+                {m.status === 'shipped' && <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold uppercase">Shipped</span>}
+                {m.status === 'current' && <span className="px-2 py-0.5 rounded-full bg-[#8b5cf6]/10 border border-[#8b5cf6]/20 text-[#a78bfa] text-[9px] font-bold uppercase">Current</span>}
+              </h3>
+              <p className="text-slate-400 text-xs leading-relaxed max-w-2xl">
+                {m.desc}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function ChangelogPage({ releaseInfo }: any) {
+  return (
+    <section className="relative z-10 pt-16 pb-24 px-6 max-w-3xl mx-auto text-left space-y-12">
+      <div>
+        <h1 className="text-4xl md:text-5xl font-extrabold text-white mb-4">Changelog</h1>
+        <p className="text-slate-400 text-sm max-w-2xl mb-12">
+          Track updates, security patches, and release notes for Nexa IDE.
+        </p>
+      </div>
+
+      <div className="space-y-16 border-l border-white/5 pl-8 relative">
+        {/* v1.1.0 */}
+        <div className="space-y-4">
+          <div className="absolute left-[-5px] w-2.5 h-2.5 rounded-full bg-[#8b5cf6] shadow-[0_0_8px_rgba(139,92,246,0.5)]" />
+          <span className="text-[10px] text-slate-500 font-bold uppercase">{releaseInfo.publishDate}</span>
+          <h2 className="text-xl font-bold text-white">Nexa IDE {releaseInfo.version}</h2>
+          <div className="text-xs text-slate-400 leading-relaxed space-y-2">
+            <p><strong>Highlights:</strong></p>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li><strong className="text-white">OpenRouter AI Integration</strong>: Unified endpoint access to Claude 3.5, GPT-4o, and LLaMA 3.</li>
+              <li><strong className="text-white">Streaming & Slash Commands</strong>: Real-time response generation in AI panel with support for /fix, /explain, /refactor.</li>
+              <li><strong className="text-white">Autosave & Split Views</strong>: Side-by-side editing splits with 2-second crash-recovery buffers.</li>
+              <li><strong className="text-white">Performance Optimizations</strong>: Improved token latency, file indexing, and startup boot speeds.</li>
+            </ul>
+          </div>
+        </div>
+
+        {/* v1.0.0 */}
+        <div className="space-y-4">
+          <div className="absolute left-[-5px] w-2.5 h-2.5 rounded-full bg-slate-700" />
+          <span className="text-[10px] text-slate-500 font-bold uppercase">2026-03-15</span>
+          <h2 className="text-xl font-bold text-white">Nexa IDE v1.0.0 Public Launch</h2>
+          <div className="text-xs text-slate-400 leading-relaxed space-y-2">
+            <p><strong>Highlights:</strong></p>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li><strong className="text-white">Isolated Sandbox</strong>: Local extensions load in isolated Node.js `vm` Scripts.</li>
+              <li><strong className="text-white">Safe Mode Trigger</strong>: Enable `--safe` to skip workspace restore, disable third-party extensions, and block file mounts.</li>
+              <li><strong className="text-white">Integrated Terminal</strong>: Low-latency node-pty terminal emulator with shell resize.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
   )
 }
 

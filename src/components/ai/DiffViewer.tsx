@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, memo, type CSSProperties } from 'react'
 import { motion } from 'framer-motion'
 import { Check, X, Edit3, File, ChevronDown, ChevronRight } from 'lucide-react'
 
@@ -92,7 +92,7 @@ function FileDiffCard({ diff, onAccept, onReject, onEditBeforeApply }: {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       className="rounded-xl overflow-hidden border border-white/10"
-      style={{ background: 'rgba(13,14,22,0.9)' }}
+      style={{ background: 'rgba(13,14,22,0.9)' } as CSSProperties}
     >
       <div
         className="flex items-center justify-between px-3 py-2 cursor-pointer select-none"

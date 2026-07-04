@@ -1,0 +1,16 @@
+{
+  "id": "nexa.hello-world",
+  "name": "Nexa Hello World",
+  "version": "0.0.1",
+  "description": "A tiny sample extension installed from the local marketplace registry.",
+  "publisher": "nexa",
+  "main": "index.js",
+  "activationEvents": ["onStartup"],
+  "commands": [
+    {
+      "id": "nexa.helloWorld.sayHello",
+      "title": "Nexa Hello World: Say Hello",
+      "description": "Log a hello message from the sample extension"
+    }
+  ]
+}

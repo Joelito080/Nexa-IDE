@@ -1,16 +1,50 @@
 import './shim'
 import dotenv from 'dotenv'
-dotenv.config()
-import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
-import { autoUpdater } from 'electron-updater'
-import log from 'electron-log'
 import path from 'node:path'
+import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, clipboard } from 'electron'
+import type { UpdateInfo, ProgressInfo } from 'electron-updater'
+
+const currentFile = __filename
+const __dirname = path.dirname(currentFile)
+
+const startupStart = performance.now()
+import { telemetry } from './telemetry'
+
+// Load .env if present. In dev we prefer project root; in packaged builds
+// also attempt to load a .env placed next to the app ASAR (for local overrides).
+try {
+  const candidates = [
+    path.resolve(__dirname, '../.env'), // repo root during dev
+    path.resolve(process.cwd(), '.env'), // working directory
+    path.resolve(__dirname, '../../.env'), // one level above app.asar
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync && fs.existsSync(p)) {
+      dotenv.config({ path: p, override: true })
+      console.log('[NEXA] Loaded .env from', p)
+      break
+    }
+  }
+} catch (err) {
+  console.warn('[NEXA] .env load failed:', err)
+}
+
+let autoUpdater: any = null
+if (app.isPackaged) {
+  try {
+    autoUpdater = require('electron-updater').autoUpdater
+  } catch (err) {
+    console.warn('Auto updater disabled:', err)
+  }
+} else {
+  console.log('[Electron] AutoUpdater disabled in dev mode')
+}
+import log from 'electron-log'
 import fs from 'node:fs'
 import fsPromises from 'node:fs/promises'
 import os from 'node:os'
 import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 import ignore from 'ignore'
 import simpleGit from 'simple-git'
 import {
@@ -52,7 +86,7 @@ import {
   isEncryptionAvailable,
 } from './authStorage'
 import { handleGoogleOAuth } from './oauth'
-import { ExtensionService } from './extensionService'
+import { ExtensionHostService } from './extensionHostService'
 import {
   listProjectTemplates,
   findTemplateByPrompt,
@@ -77,8 +111,9 @@ import {
 } from './licenseService'
 
 // ESM-compatible __dirname
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
 console.log('[Electron] __dirname:', __dirname)
+console.log('[Electron] app startup begin')
+log.info('[Electron] app startup begin')
 
 try {
   if (process.env.OPENROUTER_API_KEY?.trim()) {
@@ -110,6 +145,162 @@ function writeLogEntrySync(projectPath: string | null, type: 'info' | 'error' | 
   }
 }
 
+function writeCrashLog(message: string) {
+  try {
+    const crashDir = path.join(app.getPath('userData'), 'logs')
+    fs.mkdirSync(crashDir, { recursive: true })
+    const crashFile = path.join(crashDir, 'crash.log')
+    fs.appendFileSync(crashFile, `${new Date().toISOString()} ${message}\n`, 'utf-8')
+  } catch (err) {
+    console.error('Failed to write crash log:', err)
+  }
+}
+
+interface CrashMetadata {
+  source: string
+  reason: string
+  details?: string
+  timestamp: string
+}
+
+const crashMetadataPath = path.join(app.getPath('userData'), 'crash-metadata.json')
+
+function readCrashMetadataSync(): CrashMetadata | null {
+  try {
+    if (!fs.existsSync(crashMetadataPath)) return null
+    const raw = fs.readFileSync(crashMetadataPath, 'utf-8')
+    return JSON.parse(raw) as CrashMetadata
+  } catch (err) {
+    console.error('Failed to read crash metadata:', err)
+    return null
+  }
+}
+
+function writeCrashMetadataSync(metadata: Omit<CrashMetadata, 'timestamp'>) {
+  try {
+    const entry: CrashMetadata = {
+      ...metadata,
+      timestamp: new Date().toISOString(),
+    }
+    fs.writeFileSync(crashMetadataPath, JSON.stringify(entry, null, 2), 'utf-8')
+  } catch (err) {
+    console.error('Failed to write crash metadata:', err)
+  }
+}
+
+function clearCrashMetadataSync() {
+  try {
+    if (fs.existsSync(crashMetadataPath)) {
+      fs.unlinkSync(crashMetadataPath)
+    }
+  } catch (err) {
+    console.error('Failed to clear crash metadata:', err)
+  }
+}
+
+function getLastCrashPath() {
+  return path.join(app.getPath('userData'), 'last-crash.json')
+}
+
+function getCrashHistoryPath() {
+  return path.join(app.getPath('userData'), 'crash-history.json')
+}
+
+interface LastCrashEntry {
+  timestamp: string
+  component: string
+  reason: string
+  shortStack?: string
+  details?: string
+  suggestedSafeMode?: string[]
+}
+
+function readCrashHistorySync(): LastCrashEntry[] {
+  try {
+    const historyPath = getCrashHistoryPath()
+    if (!fs.existsSync(historyPath)) return []
+    const raw = fs.readFileSync(historyPath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.slice(0, 10).map((entry) => entry ?? {}) as LastCrashEntry[]
+  } catch (err) {
+    console.error('Failed to read crash history:', err)
+    return []
+  }
+}
+
+function writeCrashHistorySync(entry: LastCrashEntry) {
+  try {
+    const historyPath = getCrashHistoryPath()
+    const previous = readCrashHistorySync()
+    const next = [entry, ...previous].slice(0, 10)
+    fs.writeFileSync(historyPath, JSON.stringify(next, null, 2), 'utf-8')
+  } catch (err) {
+    console.error('Failed to write crash history:', err)
+  }
+}
+
+function sanitizeCrashDetails(details: unknown): string {
+  try {
+    if (!details) return ''
+    const blacklist = [
+      'authorization', 'authorizationheader', 'auth', 'apikey', 'api_key', 'openrouterapikey',
+      'token', 'access_token', 'refresh_token', 'password', 'client_secret', 'secret', 'sessiontoken',
+      'idtoken', 'refreshtoken', 'google_access_token', 'google_refresh_token', 'cookie', 'set-cookie',
+      'x-api-key', 'x-auth-token', 'openai_api_key', 'anthropic_api_key', 'gemini_api_key',
+    ]
+
+    const redact = (obj: any): any => {
+      if (obj == null) return obj
+      if (typeof obj === 'string') {
+        return obj.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+      }
+      if (typeof obj !== 'object') return obj
+      if (Array.isArray(obj)) return obj.map(redact)
+      const out: any = {}
+      for (const k of Object.keys(obj)) {
+        const v = obj[k]
+        const lower = k.toLowerCase()
+        if (blacklist.includes(lower)) {
+          out[k] = '[REDACTED]'
+          continue
+        }
+        if (typeof v === 'string') out[k] = v.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+        else out[k] = redact(v)
+      }
+      return out
+    }
+
+    if (typeof details === 'string') {
+      return details.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+    }
+    return JSON.stringify(redact(details), null, 2)
+  } catch (err) {
+    try {
+      return String(details).replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+    } catch {
+      return ''
+    }
+  }
+}
+
+function writeLastCrashSync(payload: { component: string; reason: string; shortStack?: string; details?: unknown; suggestedSafeMode?: string[] }) {
+  try {
+    const entry: LastCrashEntry = {
+      timestamp: new Date().toISOString(),
+      component: payload.component,
+      reason: payload.reason,
+      shortStack: payload.shortStack || (typeof payload.details === 'string' ? (payload.details as string).slice(0, 1024) : undefined),
+      details: sanitizeCrashDetails(payload.details),
+      suggestedSafeMode: payload.suggestedSafeMode || [],
+    }
+    fs.writeFileSync(getLastCrashPath(), JSON.stringify(entry, null, 2), 'utf-8')
+    writeCrashHistorySync(entry)
+  } catch (err) {
+    console.error('Failed to write last-crash.json:', err)
+  }
+}
+
 // ─── Path Setup ────────────────────────────────────────────────────────────────
 // dist/         → renderer build output (Vite)
 // dist-electron/ → main process / preload build output
@@ -132,6 +323,11 @@ log.transports.file.level = 'info'
 log.info('[Electron] Logs will be written to', supportLogsPath)
 
 const applyUpdateChannelToAutoUpdater = (channel: string) => {
+  if (!autoUpdater) {
+    log.info('AutoUpdater unavailable: skipping channel configuration')
+    return
+  }
+
   const normalizedChannel = channel === 'beta' ? 'beta' : 'stable'
   const updater = autoUpdater as any
   updater.allowPrerelease = normalizedChannel === 'beta'
@@ -147,14 +343,18 @@ const applyUpdateChannelToAutoUpdater = (channel: string) => {
   })
 }
 
-try {
-  autoUpdater.logger = log
-  autoUpdater.autoDownload = true
-  autoUpdater.allowDowngrade = true
-  autoUpdater.autoInstallOnAppQuit = true
-  applyUpdateChannelToAutoUpdater('beta')
-} catch (err) {
-  log.warn('AutoUpdater initialization failed', err)
+if (autoUpdater) {
+  try {
+    autoUpdater.logger = log
+    autoUpdater.autoDownload = true
+    autoUpdater.allowDowngrade = true
+    autoUpdater.autoInstallOnAppQuit = true
+    applyUpdateChannelToAutoUpdater('beta')
+  } catch (err) {
+    log.warn('AutoUpdater initialization failed', err)
+  }
+} else {
+  log.warn('AutoUpdater disabled because electron-updater could not be loaded')
 }
 
 let extensionStorageRoot = app.isPackaged
@@ -188,11 +388,48 @@ if (app.isPackaged) {
 }
 
 log.info('[Electron] extensionStorageRoot resolved to:', extensionStorageRoot)
-const extensionService = new ExtensionService({
+const isSafeMode = process.argv.includes('--safe') || process.argv.includes('--safe-mode') || process.env.NEXA_SAFE_MODE === '1'
+const safeModeError = (feature: string) => ({ error: `Safe Mode: ${feature} disabled` })
+if (isSafeMode) {
+  log.warn('[Electron] Safe Mode enabled - disabling extensions, workspace restore, and tool execution')
+}
+
+const extensionHostService = new ExtensionHostService({
   extensionStorageRoot,
   builtInMarketplaceRoot: marketplaceRoot,
   onExtensionEvent: (channel, payload) => {
     mainWindow?.webContents.send(channel, payload)
+    if (channel === 'extensionHost:crash') {
+      const message = payload && typeof payload === 'object' && 'message' in (payload as any)
+        ? (payload as any).message
+        : String(payload)
+      const details = payload && typeof payload === 'object' ? JSON.stringify(payload) : undefined
+      writeCrashMetadataSync({
+        source: 'extension-crash',
+        reason: message || 'Extension host crashed',
+        details,
+      })
+      try {
+        writeLastCrashSync({
+          component: 'extension-host',
+          reason: message || 'Extension host crashed',
+          shortStack: typeof details === 'string' ? details.slice(0, 1024) : undefined,
+          details: payload,
+          suggestedSafeMode: ['--safe', '--no-extensions']
+        })
+      } catch {}
+      telemetry.trackEvent('crash', {
+        component: 'extension-host',
+        reason: message || 'Extension host crashed',
+        details: payload
+      })
+    } else if (channel === 'extensionHost:error') {
+      const errPayload = payload as { extensionId: string; error: string }
+      telemetry.trackEvent('extension-failure', {
+        extensionId: errPayload?.extensionId || 'unknown',
+        error: errPayload?.error || 'Unknown error'
+      })
+    }
   },
 })
 const promptHistoryService = new PromptHistoryService(userDataPath)
@@ -200,6 +437,7 @@ const snippetVaultService = new SnippetVaultService(userDataPath)
 
 app.on('ready', () => {
   log.info('[Electron] app ready event fired')
+  console.log('[Electron] app ready event fired')
 })
 
 app.on('window-all-closed', () => {
@@ -221,6 +459,19 @@ process.on('uncaughtException', (err) => {
   log.error('UNCAUGHT EXCEPTION:', err)
   try {
     writeLogEntrySync(null, 'error', 'System', `Uncaught Exception: ${err.message}\nStack: ${err.stack}`)
+    writeCrashLog(`Uncaught Exception: ${err.message} Stack: ${err.stack}`)
+    writeCrashMetadataSync({
+      source: 'uncaught-exception',
+      reason: err.message || String(err),
+      details: err.stack,
+    })
+    writeLastCrashSync({
+      component: 'main',
+      reason: err.message || String(err),
+      shortStack: err.stack ? String(err.stack).split('\n').slice(0,5).join('\n') : undefined,
+      details: err.stack,
+      suggestedSafeMode: ['--safe', '--no-extensions']
+    })
   } catch {}
   killAllSessions()
   try {
@@ -235,6 +486,19 @@ process.on('unhandledRejection', (reason) => {
   const stack = reason instanceof Error ? reason.stack : ''
   try {
     writeLogEntrySync(null, 'error', 'System', `Unhandled Rejection: ${message}\nStack: ${stack}`)
+    writeCrashLog(`Unhandled Rejection: ${message} Stack: ${stack}`)
+    writeCrashMetadataSync({
+      source: 'unhandled-rejection',
+      reason: message,
+      details: stack,
+    })
+    writeLastCrashSync({
+      component: 'main',
+      reason: message,
+      shortStack: stack ? String(stack).split('\n').slice(0,5).join('\n') : undefined,
+      details: stack,
+      suggestedSafeMode: ['--safe', '--no-extensions']
+    })
   } catch {}
   killAllSessions()
   try {
@@ -381,13 +645,14 @@ async function createWindow() {
   }
 
   console.log('[Electron] using preload path:', preloadPath ?? 'none')
+  console.log('[NEXA] __dirname', __dirname)
+  console.log('[NEXA] isPackaged', app.isPackaged)
   log.info('[Electron] using preload path:', preloadPath ?? 'none')
 
   mainWindow = new BrowserWindow({
-    width: 1440,
+    width: 1400,
     height: 900,
-    minWidth:  960,
-    minHeight: 640,
+    show: false,
 
     // Custom title bar — we draw our own in React
     frame: false,
@@ -395,7 +660,6 @@ async function createWindow() {
 
     // Prevents white flash before content loads
     backgroundColor: '#080909',
-    show: false,
 
     webPreferences: {
       preload: preloadPath,
@@ -422,9 +686,16 @@ async function createWindow() {
 
   // Show only when renderer is fully ready (no FOUC)
   mainWindow.once('ready-to-show', () => {
+    console.log('[NEXA] Window ready-to-show')
+    log.info('[Electron] ready-to-show fired')
+    mainWindow?.show()
+    mainWindow?.focus()
     closeSplashWindow(mainWindow!)
-    if (app.isPackaged) {
-      autoUpdater.checkForUpdatesAndNotify().catch((err) => log.warn('AutoUpdater check failed', err))
+    if (app.isPackaged && autoUpdater) {
+      autoUpdater.checkForUpdatesAndNotify().catch((err: Error) => {
+        log.warn('AutoUpdater check failed', err)
+        writeCrashLog(`AutoUpdater failed: ${err.message}`)
+      })
     }
   })
 
@@ -488,9 +759,45 @@ async function createWindow() {
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('Renderer process gone:', details)
+    writeCrashMetadataSync({
+      source: 'renderer-crash',
+      reason: details.reason || 'Renderer process gone',
+      details: JSON.stringify(details),
+    })
+    try {
+      writeLastCrashSync({
+        component: 'renderer',
+        reason: details.reason || 'Renderer process gone',
+        shortStack: typeof details === 'object' ? (details.reason || '').slice(0, 256) : String(details).slice(0,256),
+        details,
+        suggestedSafeMode: ['--safe', '--no-extensions']
+      })
+    } catch {}
+    telemetry.trackEvent('crash', {
+      component: 'renderer',
+      reason: details.reason || 'Renderer process gone',
+      details
+    })
     if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.reload()
     }
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[NEXA] Renderer loaded')
+    log.info('[Electron] did-finish-load')
+    const startupDuration = Math.round(performance.now() - startupStart)
+    telemetry.trackEvent('startup-time', { durationMs: startupDuration })
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error('[NEXA] Renderer failed:', errorCode, errorDescription, validatedURL, isMainFrame)
+    log.error('[Electron] did-fail-load', {
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame,
+    })
   })
 
   // ── Load URL (dev server may not be ready yet) ──────────────────────────────
@@ -522,25 +829,53 @@ async function createWindow() {
     const ok = await tryConnect(VITE_DEV_SERVER_URL)
     if (ok) {
       log.info('[Electron] Dev server is ready, loading:', VITE_DEV_SERVER_URL)
-      mainWindow.loadURL(VITE_DEV_SERVER_URL)
+      console.log('[Electron] loadURL start:', VITE_DEV_SERVER_URL)
+      try {
+        await mainWindow.loadURL(VITE_DEV_SERVER_URL)
+        log.info('[Electron] loadURL complete:', VITE_DEV_SERVER_URL)
+      } catch (err) {
+        log.error('[Electron] Failed to load dev server URL, falling back to dist or blank page', err)
+        const indexPath = path.join(process.env.DIST!, 'index.html')
+        if (fs.existsSync(indexPath)) {
+          log.info('[Electron] Loading renderer via loadFile:', indexPath)
+          console.log('[Electron] loadFile start:', indexPath)
+          await mainWindow.loadFile(indexPath)
+          log.info('[Electron] loadFile complete:', indexPath)
+        } else {
+          log.warn('[Electron] Falling back to about:blank')
+          console.log('[Electron] loadURL fallback: about:blank')
+          await mainWindow.loadURL('about:blank')
+        }
+      }
     } else {
       log.warn('[Electron] Dev server not ready, falling back to dist')
       const indexPath = path.join(process.env.DIST!, 'index.html')
       if (fs.existsSync(indexPath)) {
-        mainWindow.loadFile(indexPath)
+        log.info('[Electron] Loading renderer via loadFile:', indexPath)
+        console.log('[Electron] loadFile start:', indexPath)
+        await mainWindow.loadFile(indexPath)
+        log.info('[Electron] loadFile complete:', indexPath)
       } else {
         // As a last resort load a blank page so the app doesn't crash
-        mainWindow.loadURL('about:blank')
+        log.warn('[Electron] Falling back to about:blank')
+        console.log('[Electron] loadURL fallback: about:blank')
+        await mainWindow.loadURL('about:blank')
       }
     }
   } else {
-    log.info('[Electron] Not in dev mode, loading from dist')
-    const indexPath = path.join(process.env.DIST!, 'index.html')
-    if (fs.existsSync(indexPath)) {
-      mainWindow.loadFile(indexPath)
+    // Packaged builds should load the built renderer directly from dist.
+    const packagedIndexPath = path.join(__dirname, '../dist/index.html')
+    log.info('[Electron] Packaged app loading dist index:', packagedIndexPath)
+    console.log('[NEXA] packaged loadFile start:', packagedIndexPath)
+
+    if (fs.existsSync(packagedIndexPath)) {
+      await mainWindow.loadFile(packagedIndexPath)
+      log.info('[Electron] loadFile complete:', packagedIndexPath)
+      console.log('[NEXA] packaged renderer loaded:', packagedIndexPath)
     } else {
-      log.error('[Electron] dist/index.html not found, loading blank page')
-      mainWindow.loadURL('about:blank')
+      log.error('[Electron] packaged dist/index.html not found, loading blank page')
+      console.error('[NEXA] Renderer failed: packaged index missing', packagedIndexPath)
+      await mainWindow.loadURL('about:blank')
     }
   }
 }
@@ -563,8 +898,31 @@ ipcMain.on('window:close', () => {
 })
 
 ipcMain.on('app:ready-to-quit', () => {
+  clearCrashMetadataSync()
   isReadyToQuit = true
   app.quit()
+})
+
+ipcMain.handle('app:getCrashMetadata', async () => {
+  return { crashMetadata: readCrashMetadataSync() }
+})
+
+ipcMain.handle('app:recordCrashMetadata', async (_event, metadata: { source: string; reason: string; details?: string }) => {
+  try {
+    writeCrashMetadataSync(metadata)
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:clearCrashMetadata', async () => {
+  try {
+    clearCrashMetadataSync()
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
 })
 
 ipcMain.handle('window:isMaximized', () => {
@@ -572,7 +930,615 @@ ipcMain.handle('window:isMaximized', () => {
 })
 
 ipcMain.on('app:allowPath', (_event, dirPath: string) => {
+  if (isSafeMode) {
+    log.warn('[Electron] Safe Mode active: ignoring allowPath request for', dirPath)
+    return
+  }
   allowPath(dirPath)
+})
+
+ipcMain.handle('app:isSafeMode', async () => {
+  return isSafeMode
+})
+
+ipcMain.handle('app:relaunchNormal', async () => {
+  try {
+    const args = process.argv.filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
+    if (process.platform === 'win32') {
+      app.relaunch({ args })
+    } else {
+      app.relaunch({ args })
+    }
+    app.exit(0)
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:relaunchSafe', async () => {
+  try {
+    // Build args preserving existing args but ensuring --safe flag present
+    const base = process.argv.filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
+    const args = [...base, '--safe']
+    app.relaunch({ args })
+    app.exit(0)
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+// ─── IPC: Export Diagnostics ───────────────────────────────────────────────
+async function safeCopyFile(src: string, dest: string) {
+  try {
+    await fsPromises.mkdir(path.dirname(dest), { recursive: true })
+    await fsPromises.copyFile(src, dest)
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
+async function collectFilesToTempDir(tempDir: string) {
+  const collected: string[] = []
+
+  // 1) Crash metadata / crash.log
+  try {
+    const crashDir = path.join(app.getPath('userData'), 'logs')
+    const crashLog = path.join(crashDir, 'crash.log')
+    if (fs.existsSync(crashLog)) {
+      const dest = path.join(tempDir, 'logs', 'crash.log')
+      if (await safeCopyFile(crashLog, dest)) collected.push(dest)
+    }
+  } catch {}
+
+  // 2) Main app log(s)
+  try {
+    const mainLogDir = path.join(app.getPath('userData'), 'NEXUS', 'logs')
+    if (fs.existsSync(mainLogDir)) {
+      const files = fs.readdirSync(mainLogDir)
+      for (const f of files) {
+        if (f.endsWith('.log') || f.endsWith('.txt')) {
+          const src = path.join(mainLogDir, f)
+          const dest = path.join(tempDir, 'logs', f)
+          if (await safeCopyFile(src, dest)) collected.push(dest)
+        }
+      }
+    }
+  } catch {}
+
+  // 3) Any extension logs under extension storage
+  try {
+    if (fs.existsSync(extensionStorageRoot)) {
+      const extFiles = fs.readdirSync(extensionStorageRoot)
+      for (const name of extFiles) {
+        const extPath = path.join(extensionStorageRoot, name)
+        try {
+          if (fs.statSync(extPath).isDirectory()) {
+            // copy any logs inside extension folder
+            const walk = (dir: string) => {
+              for (const entry of fs.readdirSync(dir)) {
+                const full = path.join(dir, entry)
+                try {
+                  const st = fs.statSync(full)
+                  if (st.isDirectory()) walk(full)
+                  else if (entry.endsWith('.log') || entry.endsWith('.txt')) {
+                    const rel = path.relative(extensionStorageRoot, full)
+                    const dest = path.join(tempDir, 'extensions', rel)
+                    safeCopyFile(full, dest)
+                    collected.push(dest)
+                  }
+                } catch {}
+              }
+            }
+            walk(extPath)
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 4) AI debug / session snapshots from userData
+  try {
+    const aiCandidates = ['ai-debug.log', 'ai.log', 'ai-sessions.json']
+    for (const name of aiCandidates) {
+      const p = path.join(app.getPath('userData'), name)
+      if (fs.existsSync(p)) {
+        const dest = path.join(tempDir, 'ai', name)
+        if (await safeCopyFile(p, dest)) collected.push(dest)
+      }
+    }
+  } catch {}
+
+  // 5) workspace snapshot (engine)
+  try {
+    const snapshot = await workspaceEngine.getSnapshot()
+    const dest = path.join(tempDir, 'workspace-snapshot.json')
+    await fsPromises.writeFile(dest, JSON.stringify(snapshot, null, 2), 'utf-8')
+    collected.push(dest)
+  } catch {}
+
+  // 6) installed extensions list (folder listing / package.json if present)
+  try {
+    const installed: any[] = []
+    if (fs.existsSync(extensionStorageRoot)) {
+      for (const name of fs.readdirSync(extensionStorageRoot)) {
+        const extPath = path.join(extensionStorageRoot, name)
+        try {
+          const st = fs.statSync(extPath)
+          if (st.isDirectory()) {
+            let manifest: any = { id: name }
+            const pkg = path.join(extPath, 'package.json')
+            if (fs.existsSync(pkg)) {
+              try {
+                manifest = JSON.parse(fs.readFileSync(pkg, 'utf-8'))
+              } catch {}
+            }
+            installed.push({ id: name, manifest })
+          }
+        } catch {}
+      }
+    }
+    const dest = path.join(tempDir, 'installed-extensions.json')
+    await fsPromises.writeFile(dest, JSON.stringify(installed, null, 2), 'utf-8')
+    collected.push(dest)
+  } catch {}
+
+  // 7) active model / AI state snapshot
+  try {
+    const aiState: any = {
+      provider: isOpenRouterKeyConfigured() ? 'openrouter' : 'free-agent',
+      openRouterKeyPresent: Boolean(getOpenRouterKey()),
+      availableModels: null,
+      activeModel: null,
+      systemPrompt: null,
+      contextSources: [],
+      tokenBudget: null,
+      currentTokenUsage: null,
+      attachedFiles: [],
+      sessionMode: null,
+      truncationHistory: [],
+      resetHistory: [],
+      latencyMetrics: {
+        last: null,
+        average: null,
+        samples: [],
+      },
+    }
+
+    try {
+      const models = await fetchOpenRouterModels().catch(() => null)
+      aiState.availableModels = models
+    } catch {}
+
+    // Budget status
+    try {
+      const budget = await getBudgetStatus().catch(() => null)
+      aiState.tokenBudget = budget
+    } catch {}
+
+    // Try to load persisted AI sessions file if present (renderer may persist sessions here)
+    try {
+      const sessionsPath = path.join(app.getPath('userData'), 'ai-sessions.json')
+      if (fs.existsSync(sessionsPath)) {
+        try {
+          const raw = await fsPromises.readFile(sessionsPath, 'utf-8')
+          const parsed = JSON.parse(raw)
+          aiState.rawSessions = parsed
+          // Attempt to extract most-recent active session
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const latest = parsed[parsed.length - 1]
+            aiState.activeModel = latest.data?.model ?? latest.model ?? null
+            aiState.systemPrompt = latest.data?.systemPrompt ?? latest.systemPrompt ?? null
+            aiState.contextSources = latest.data?.contextSources ?? latest.contextSources ?? []
+            aiState.attachedFiles = latest.data?.attachedFiles ?? latest.attachedFiles ?? []
+            aiState.sessionMode = latest.data?.mode ?? latest.mode ?? null
+            // token usage heuristics if available
+            if (latest.usage) aiState.currentTokenUsage = latest.usage
+            if (latest.truncationHistory) aiState.truncationHistory = latest.truncationHistory
+            if (latest.resetHistory) aiState.resetHistory = latest.resetHistory
+          } else if (parsed && typeof parsed === 'object') {
+            // single-session object
+            const s = parsed
+            aiState.activeModel = s.data?.model ?? s.model ?? null
+            aiState.systemPrompt = s.data?.systemPrompt ?? s.systemPrompt ?? null
+            aiState.contextSources = s.data?.contextSources ?? s.contextSources ?? []
+            aiState.attachedFiles = s.data?.attachedFiles ?? s.attachedFiles ?? []
+            aiState.sessionMode = s.data?.mode ?? s.mode ?? null
+            if (s.usage) aiState.currentTokenUsage = s.usage
+            if (s.truncationHistory) aiState.truncationHistory = s.truncationHistory
+            if (s.resetHistory) aiState.resetHistory = s.resetHistory
+          }
+        } catch (err) {
+          // ignore parse errors
+        }
+      }
+    } catch {}
+
+    // If attached files reference workspace paths, try to gather metadata
+    try {
+      const fileMeta: any[] = []
+      for (const f of aiState.attachedFiles || []) {
+        try {
+          if (typeof f === 'string' && fs.existsSync(f)) {
+            const st = fs.statSync(f)
+            fileMeta.push({ path: f, size: st.size, mtime: st.mtime.toISOString() })
+          } else if (f && typeof f === 'object' && f.path) {
+            const p = f.path
+            if (fs.existsSync(p)) {
+              const st = fs.statSync(p)
+              fileMeta.push({ path: p, size: st.size, mtime: st.mtime.toISOString(), meta: f })
+            } else {
+              fileMeta.push({ path: p, meta: f })
+            }
+          } else {
+            fileMeta.push({ path: f })
+          }
+        } catch {}
+      }
+      aiState.attachedFileMetadata = fileMeta
+    } catch {}
+
+    // Latency metrics: attempt to scan ai-debug.log and ai.log for duration/speed entries
+    try {
+      const metrics: number[] = []
+      const candidates = [path.join(app.getPath('userData'), 'ai-debug.log'), path.join(app.getPath('userData'), 'ai.log')]
+      for (const p of candidates) {
+        try {
+          if (!fs.existsSync(p)) continue
+          const txt = await fsPromises.readFile(p, 'utf-8')
+          const lines = txt.split(/\r?\n/).slice(-200)
+          for (const line of lines) {
+            // look for patterns like "duration: 1.23s" or "speed: 45 tokens/s" or "duration=1234ms"
+            const mSec = line.match(/duration[:=]\s*(\d+(?:\.\d+)?)s/i)
+            if (mSec && mSec[1]) {
+              const val = parseFloat(mSec[1])
+              metrics.push(val)
+              continue
+            }
+            const mMs = line.match(/duration[:=]\s*(\d+(?:\.\d+)?)ms/i)
+            if (mMs && mMs[1]) {
+              metrics.push(parseFloat(mMs[1]) / 1000)
+              continue
+            }
+            const mSpeed = line.match(/speed[:=]\s*(\d+(?:\.\d+)?)/i)
+            if (mSpeed && mSpeed[1]) {
+              const speed = parseFloat(mSpeed[1])
+              if (speed > 0) {
+                // convert tokens/s to approximate seconds for a 100-token response
+                metrics.push(100 / speed)
+              }
+            }
+          }
+        } catch {}
+      }
+      if (metrics.length > 0) {
+        aiState.latencyMetrics.samples = metrics
+        const sum = metrics.reduce((a: number, b: number) => a + b, 0)
+        aiState.latencyMetrics.average = sum / metrics.length
+        aiState.latencyMetrics.last = metrics[metrics.length - 1]
+      }
+    } catch {}
+
+    // Request live in-memory snapshot from renderer if available
+    try {
+      if (mainWindow && mainWindow.webContents && !mainWindow.isDestroyed()) {
+        const reqId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+        const channel = `ai:latestSnapshotResponse:${reqId}`
+        const liveSnapshotPromise = new Promise<any>((resolve) => {
+          const cb = (_: any, payload: any) => {
+            try { resolve(payload) } catch { resolve(null) }
+          }
+          ipcMain.once(channel, cb)
+          // Safety timeout (8s)
+          const to = setTimeout(() => {
+            try {
+              ipcMain.removeListener(channel, cb)
+            } catch {}
+            try {
+              writeLogEntrySync(null, 'info', 'Diagnostics', 'Live snapshot timed out, continuing export')
+            } catch {}
+            resolve(null)
+          }, 8000)
+        })
+        // Notify renderer UI and ask it to provide latest snapshot
+        try {
+          mainWindow.webContents.send('app:collectingLiveSnapshot')
+          mainWindow.webContents.send('ai:requestLatestSnapshot', reqId)
+          const liveSnap = await liveSnapshotPromise
+          if (liveSnap) {
+            // Sanitize snapshot to remove secrets
+            const sanitize = (obj: any): any => {
+              if (!obj || typeof obj !== 'object') {
+                if (typeof obj === 'string') {
+                  // redact bearer tokens
+                  return obj.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+                }
+                return obj
+              }
+              if (Array.isArray(obj)) return obj.map(sanitize)
+              const out: any = {}
+              for (const k of Object.keys(obj)) {
+                const v = obj[k]
+                const lower = k.toLowerCase()
+                // Extended blacklist of sensitive keys to redact
+                if ([
+                  'authorization', 'authorizationheader', 'auth', 'apikey', 'api_key', 'openrouterapikey',
+                  'token', 'access_token', 'refresh_token', 'password', 'client_secret', 'secret', 'sessiontoken',
+                  'idtoken', 'refreshtoken', 'google_access_token', 'google_refresh_token', 'cookie', 'set-cookie',
+                  'x-api-key', 'x-auth-token', 'openai_api_key', 'anthropic_api_key', 'gemini_api_key'
+                ].includes(lower)) {
+                  out[k] = '[REDACTED]'
+                  continue
+                }
+                if (typeof v === 'string') {
+                  // redact bearer tokens inside strings
+                  out[k] = v.replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, '[REDACTED]')
+                } else {
+                  out[k] = sanitize(v)
+                }
+              }
+              return out
+            }
+
+            const safeSnap = sanitize(liveSnap)
+            const liveDest = path.join(tempDir, 'live-ai-session.json')
+            await fsPromises.writeFile(liveDest, JSON.stringify(safeSnap, null, 2), 'utf-8')
+            collected.push(liveDest)
+
+            // Merge some fields into aiState for convenience
+            try {
+              aiState.activeModel = aiState.activeModel || safeSnap.data?.model || safeSnap.model || null
+              aiState.systemPrompt = aiState.systemPrompt || safeSnap.data?.systemPrompt || safeSnap.systemPrompt || null
+              aiState.contextSources = aiState.contextSources.length ? aiState.contextSources : (safeSnap.data?.contextSources || safeSnap.contextSources || [])
+              aiState.attachedFiles = aiState.attachedFiles.length ? aiState.attachedFiles : (safeSnap.data?.attachedFiles || safeSnap.attachedFiles || [])
+              aiState.sessionMode = aiState.sessionMode || safeSnap.data?.mode || safeSnap.mode || null
+              if (!aiState.currentTokenUsage && safeSnap.usage) aiState.currentTokenUsage = safeSnap.usage
+              if (!aiState.truncationHistory && safeSnap.truncationHistory) aiState.truncationHistory = safeSnap.truncationHistory
+              if (!aiState.resetHistory && safeSnap.resetHistory) aiState.resetHistory = safeSnap.resetHistory
+            } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+
+    const dest = path.join(tempDir, 'active-model-state.json')
+    await fsPromises.writeFile(dest, JSON.stringify(aiState, null, 2), 'utf-8')
+    collected.push(dest)
+  } catch {}
+
+  // 8) crash metadata and settings
+  try {
+    const cm = crashMetadataPath
+    if (fs.existsSync(cm)) {
+      const dest = path.join(tempDir, 'crash-metadata.json')
+      if (await safeCopyFile(cm, dest)) collected.push(dest)
+    }
+    const settings = path.join(app.getPath('userData'), 'nexus-settings.json')
+    if (fs.existsSync(settings)) {
+      const dest = path.join(tempDir, 'nexus-settings.json')
+      if (await safeCopyFile(settings, dest)) collected.push(dest)
+    }
+    const extStatePaths = [
+      path.join(extensionStorageRoot, 'extensions-state.json'),
+      path.join(app.getPath('userData'), 'extensions-state.json'),
+      path.join(extensionStorageRoot, 'registry.json'),
+      path.join(app.getPath('userData'), 'registry.json'),
+    ]
+    for (const src of extStatePaths) {
+      if (fs.existsSync(src)) {
+        const dest = path.join(tempDir, path.basename(src))
+        if (await safeCopyFile(src, dest)) collected.push(dest)
+      }
+    }
+  } catch {}
+
+  return collected
+}
+
+ipcMain.handle('app:exportDiagnostics', async () => {
+  const tmpRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'nexa-diag-'))
+  try {
+    const collected = await collectFilesToTempDir(tmpRoot)
+
+    // Create a zip archive using platform tools where available
+    const zipName = `nexa-diagnostics-${Date.now()}.zip`
+    const zipPath = path.join(os.tmpdir(), zipName)
+
+    let createdZip = false
+    try {
+      if (process.platform === 'win32') {
+        // Use PowerShell Compress-Archive
+        const ps = `powershell -NoProfile -Command "Compress-Archive -Path '${tmpRoot}\\*' -DestinationPath '${zipPath}' -Force"`
+        execSync(ps, { stdio: 'ignore' })
+        createdZip = fs.existsSync(zipPath)
+      } else {
+        // Try zip binary (mac/linux)
+        try {
+          execSync(`zip -r '${zipPath}' .`, { cwd: tmpRoot, stdio: 'ignore' })
+          createdZip = fs.existsSync(zipPath)
+        } catch {
+          // fallback: tar.gz
+          try {
+            const tgz = zipPath + '.tgz'
+            execSync(`tar -czf '${tgz}' -C '${tmpRoot}' .`, { stdio: 'ignore' })
+            if (fs.existsSync(tgz)) {
+              // rename to zipPath for simplicity
+              await fsPromises.rename(tgz, zipPath)
+              createdZip = true
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      createdZip = false
+    }
+
+    // Ask user where to save the diagnostics
+    const { canceled, filePath: saveTo } = await dialog.showSaveDialog(mainWindow!, {
+      title: 'Save Diagnostics Package',
+      defaultPath: `nexa-diagnostics-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.zip`,
+      filters: [{ name: 'Zip', extensions: ['zip'] }, { name: 'All Files', extensions: ['*'] }],
+    })
+    if (canceled) {
+      return { canceled: true, tempDir: tmpRoot }
+    }
+
+    if (createdZip && fs.existsSync(zipPath)) {
+      await fsPromises.copyFile(zipPath, saveTo!)
+    } else {
+      // Zip failed; copy folder recursively to a new folder next to target and zip manually by copying
+      const fallbackDir = (saveTo && saveTo.endsWith('.zip')) ? saveTo!.slice(0, -4) + '-files' : (saveTo! + '-files')
+      await fsPromises.mkdir(fallbackDir, { recursive: true })
+      const copyRecursive = async (src: string, dest: string) => {
+        const entries = await fsPromises.readdir(src, { withFileTypes: true })
+        for (const e of entries) {
+          const s = path.join(src, e.name)
+          const d = path.join(dest, e.name)
+          if (e.isDirectory()) {
+            await fsPromises.mkdir(d, { recursive: true })
+            await copyRecursive(s, d)
+          } else {
+            await fsPromises.copyFile(s, d)
+          }
+        }
+      }
+      await copyRecursive(tmpRoot, fallbackDir)
+    }
+
+    // Clean up temp zip if present
+    try {
+      if (fs.existsSync(zipPath)) await fsPromises.unlink(zipPath)
+    } catch {}
+
+    return { success: true, savedTo: saveTo }
+  } catch (err) {
+    console.error('Export diagnostics failed:', err)
+    return { error: (err as Error).message }
+  } finally {
+    // leave temp folder for inspection in case of failures
+  }
+})
+
+ipcMain.handle('app:openDiagnosticsFolder', async () => {
+  try {
+    const mainLogs = path.join(app.getPath('userData'), 'NEXUS', 'logs')
+    await fsPromises.mkdir(mainLogs, { recursive: true })
+    await shell.openPath(mainLogs)
+    return { success: true, path: mainLogs }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:revealInFolder', async (_event, filePath: string) => {
+  try {
+    if (!filePath) return { error: 'No path provided' }
+    if (!fs.existsSync(filePath)) return { error: 'File does not exist', path: filePath }
+    // showItemInFolder returns void, but we can return success boolean
+    shell.showItemInFolder(filePath)
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:copyPathToClipboard', async (_event, filePath: string) => {
+  try {
+    if (!filePath) return { error: 'No path provided' }
+    clipboard.writeText(String(filePath))
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:getCrashLog', async () => {
+  try {
+    const crashLog = path.join(app.getPath('userData'), 'logs', 'crash.log')
+    if (!fs.existsSync(crashLog)) return { error: 'No crash.log present' }
+    const content = await fsPromises.readFile(crashLog, 'utf-8')
+    return { content }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:getAILog', async () => {
+  try {
+    const candidates = ['ai-debug.log', 'ai.log', 'ai-sessions.json']
+    const found: Record<string, string> = {}
+    for (const c of candidates) {
+      const p = path.join(app.getPath('userData'), c)
+      if (fs.existsSync(p)) {
+        try {
+          found[c] = await fsPromises.readFile(p, 'utf-8')
+        } catch {}
+      }
+    }
+    if (Object.keys(found).length === 0) return { error: 'No AI debug logs found' }
+    return { logs: found }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:getLastCrash', async () => {
+  try {
+    const p = getLastCrashPath()
+    if (!fs.existsSync(p)) return { error: 'No last-crash.json present' }
+    const raw = await fsPromises.readFile(p, 'utf-8')
+    const parsed = JSON.parse(raw)
+    return { crash: parsed }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:getCrashHistory', async () => {
+  try {
+    const history = readCrashHistorySync()
+    return { history }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:clearCrashHistory', async () => {
+  try {
+    const crashHistoryPath = getCrashHistoryPath()
+    if (fs.existsSync(crashHistoryPath)) {
+      await fsPromises.unlink(crashHistoryPath)
+    }
+    return { success: true }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
+})
+
+ipcMain.handle('app:clearDiagnostics', async () => {
+  const removed: string[] = []
+  try {
+    const toDelete = [
+      path.join(app.getPath('userData'), 'logs', 'crash.log'),
+      crashMetadataPath,
+      path.join(app.getPath('userData'), 'ai-debug.log'),
+      path.join(app.getPath('userData'), 'ai.log'),
+      path.join(app.getPath('userData'), 'ai-sessions.json'),
+    ]
+    for (const p of toDelete) {
+      try {
+        if (fs.existsSync(p)) {
+          await fsPromises.unlink(p)
+          removed.push(p)
+        }
+      } catch {}
+    }
+    return { success: true, removed }
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
 })
 
 // ─── IPC: Auth Session Storage (Phase 2) ────────────────────────────────────
@@ -822,6 +1788,9 @@ ipcMain.handle('updater:check', async () => {
     if (!app.isPackaged) {
       return { status: 'update-not-available', version: app.getVersion() }
     }
+    if (!autoUpdater) {
+      return { status: 'update-not-available', version: app.getVersion() }
+    }
     const result = await autoUpdater.checkForUpdates()
     return { status: result ? 'checking' : 'update-not-available', version: app.getVersion() }
   } catch (err) {
@@ -867,6 +1836,10 @@ ipcMain.handle('updater:setChannel', async (_event, channel: string) => {
   }
 
   applyUpdateChannelToAutoUpdater(channel)
+  if (!autoUpdater) {
+    return { error: 'AutoUpdater unavailable' }
+  }
+
   try {
     await autoUpdater.checkForUpdatesAndNotify()
   } catch (err) {
@@ -877,10 +1850,10 @@ ipcMain.handle('updater:setChannel', async (_event, channel: string) => {
 })
 
 ipcMain.handle('updater:getChannel', async () => {
-  const channel = autoUpdater.allowPrerelease ? 'beta' : 'stable'
+  const channel = autoUpdater ? (autoUpdater.allowPrerelease ? 'beta' : 'stable') : 'stable'
   return {
     channel,
-    allowPrerelease: autoUpdater.allowPrerelease,
+    allowPrerelease: autoUpdater ? autoUpdater.allowPrerelease : false,
   }
 })
 
@@ -1290,9 +2263,12 @@ ipcMain.handle('terminal:platform', async () => getPlatformInfo())
 
 // ─── IPC: Workspace Engine ──────────────────────────────────────────────────
 ipcMain.handle('workspace:mount', async (_event, rootPath: string | null) => {
+  if (isSafeMode) {
+    return safeModeError('workspace mount')
+  }
   cancelAllActiveSearches()
   workspaceEngine.setRoot(rootPath)
-  extensionService.setWorkspaceRoot(rootPath)
+  extensionHostService.setWorkspaceRoot(rootPath)
   if (rootPath) {
     allowPath(rootPath)
     memoryService.setStoragePath(userDataPath, rootPath)
@@ -1305,21 +2281,40 @@ ipcMain.handle('workspace:mount', async (_event, rootPath: string | null) => {
   return workspaceEngine.getSnapshot()
 })
 
-ipcMain.handle('workspace:snapshot', async () => workspaceEngine.getSnapshot())
+ipcMain.handle('workspace:snapshot', async () => {
+  if (isSafeMode) {
+    return safeModeError('workspace snapshot')
+  }
+  return workspaceEngine.getSnapshot()
+})
 
-ipcMain.handle('workspace:listFiles', async () => workspaceEngine.listFiles())
+ipcMain.handle('workspace:listFiles', async () => {
+  if (isSafeMode) {
+    return safeModeError('workspace list files')
+  }
+  return workspaceEngine.listFiles()
+})
 
 ipcMain.handle('workspace:loadTree', async (_event, dirPath?: string) => {
+  if (isSafeMode) {
+    return safeModeError('workspace load tree')
+  }
   const tree = await workspaceEngine.loadFileTree(dirPath)
   return { tree, snapshot: await workspaceEngine.getSnapshot() }
 })
 
 ipcMain.handle('workspace:setCwd', async (_event, cwd: string | null) => {
+  if (isSafeMode) {
+    return safeModeError('workspace cwd change')
+  }
   workspaceEngine.setCwd(cwd)
   return { cwd: workspaceEngine.getCwd() }
 })
 
 ipcMain.handle('workspace:syncOpenFiles', async (_event, files: string[]) => {
+  if (isSafeMode) {
+    return safeModeError('workspace sync open files')
+  }
   workspaceEngine.syncOpenFiles(files)
   return { success: true }
 })
@@ -1333,6 +2328,9 @@ ipcMain.handle('agent:run', async (event, payload: {
   provider?: string
   model?: string
 }) => {
+  if (isSafeMode) {
+    return safeModeError('agent runtime')
+  }
   const sender = event.sender
   return runAgentLoop({
     ...payload,
@@ -1357,6 +2355,9 @@ ipcMain.handle('agent:tool', async (_event, payload: {
   workspaceRoot: string
   cwd?: string
 }) => {
+  if (isSafeMode) {
+    return safeModeError('tool execution')
+  }
   const ctx = {
     workspaceRoot: payload.workspaceRoot,
     cwd: payload.cwd ?? payload.workspaceRoot,
@@ -1371,6 +2372,9 @@ ipcMain.handle('opencode:detect', async () => {
 })
 
 ipcMain.handle('opencode:run', async (event, payload: { prompt: string; projectPath: string }) => {
+  if (isSafeMode) {
+    return safeModeError('OpenCode execution')
+  }
   const { runOpenCode } = await import('./opencodeService')
   const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const sender = event.sender
@@ -1965,10 +2969,13 @@ ipcMain.on('search:cancel', (_event, searchId: string) => {
 
 // ─── IPC: Workspace / Extension / AI / Premium Services ─────────────────────
 ipcMain.handle('workspace:setRoot', async (_event, rootPath: string | null) => {
+  if (isSafeMode) {
+    return safeModeError('workspace root change')
+  }
   cancelAllActiveSearches()
   fileCache.clear()
   workspaceEngine.setRoot(rootPath)
-  extensionService.setWorkspaceRoot(rootPath)
+  extensionHostService.setWorkspaceRoot(rootPath)
   if (rootPath) {
     memoryService.setStoragePath(userDataPath, rootPath)
     await memoryService.load(rootPath)
@@ -1978,43 +2985,81 @@ ipcMain.handle('workspace:setRoot', async (_event, rootPath: string | null) => {
 })
 
 ipcMain.handle('workspace:getRoot', async () => {
-  return { root: extensionService.getWorkspaceRoot?.() ?? null }
+  return { root: workspaceEngine.getRoot() }
 })
 
 ipcMain.handle('extension:listInstalled', async () => {
-  return extensionService.listInstalledExtensions()
+  if (isSafeMode) return safeModeError('extension listing')
+  return extensionHostService.listInstalledExtensions()
 })
 
 ipcMain.handle('extension:listMarketplace', async (_event, query?: string) => {
-  return extensionService.listMarketplaceExtensions(query)
+  if (isSafeMode) return safeModeError('extension listing')
+  return extensionHostService.listMarketplace(query)
+})
+
+ipcMain.handle('extension:checkForUpdates', async () => {
+  if (isSafeMode) return safeModeError('extension update check')
+  return extensionHostService.checkForUpdates()
+})
+
+ipcMain.handle('extension:updateExtension', async (_event, extensionId: string) => {
+  if (isSafeMode) return safeModeError('extension update')
+  return extensionHostService.updateExtension(extensionId)
+})
+
+ipcMain.handle('extension:updateAllExtensions', async () => {
+  if (isSafeMode) return safeModeError('extension update')
+  return extensionHostService.updateAllExtensions()
+})
+
+ipcMain.handle('extension:clearQuarantine', async (_event, extensionId: string) => {
+  if (isSafeMode) return safeModeError('extension quarantine clear')
+  return extensionHostService.clearExtensionQuarantine(extensionId)
 })
 
 ipcMain.handle('extension:installLocal', async () => {
-  return extensionService.openExtensionFolderFromDialog()
+  if (isSafeMode) return safeModeError('extension install')
+  const result = await dialog.showOpenDialog({ title: 'Select extension folder', properties: ['openDirectory'] })
+  if (result.canceled || result.filePaths.length === 0) {
+    return null
+  }
+  return extensionHostService.installLocalExtension(result.filePaths[0])
 })
 
 ipcMain.handle('extension:installMarketplace', async (_event, extensionId: string) => {
-  return extensionService.installMarketplaceExtension(extensionId)
+  if (isSafeMode) return safeModeError('extension install')
+  return extensionHostService.installMarketplaceExtension(extensionId)
 })
 
 ipcMain.handle('extension:enable', async (_event, extensionId: string) => {
-  return extensionService.enableExtension(extensionId)
+  if (isSafeMode) return safeModeError('extension enable/disable')
+  return extensionHostService.enableExtension(extensionId)
 })
 
 ipcMain.handle('extension:disable', async (_event, extensionId: string) => {
-  return extensionService.disableExtension(extensionId)
+  if (isSafeMode) return safeModeError('extension enable/disable')
+  return extensionHostService.disableExtension(extensionId)
 })
 
 ipcMain.handle('extension:uninstall', async (_event, extensionId: string) => {
-  return extensionService.uninstallExtension(extensionId)
+  if (isSafeMode) return safeModeError('extension uninstall')
+  return extensionHostService.uninstallExtension(extensionId)
 })
 
 ipcMain.handle('extension:listCommands', async () => {
-  return extensionService.listCommands()
+  if (isSafeMode) return safeModeError('extension commands')
+  return extensionHostService.listCommands()
 })
 
 ipcMain.handle('extension:runCommand', async (_event, commandId: string, ...args: any[]) => {
-  return extensionService.runCommand(commandId, ...args)
+  if (isSafeMode) return safeModeError('extension command')
+  return extensionHostService.runCommand(commandId, ...args)
+})
+
+ipcMain.handle('extension:reloadExtensions', async () => {
+  if (isSafeMode) return safeModeError('extension reload')
+  return extensionHostService.reloadExtensions()
 })
 
 ipcMain.handle('project:listTemplates', async () => {
@@ -2026,20 +3071,24 @@ ipcMain.handle('project:findTemplate', async (_event, prompt: string) => {
 })
 
 ipcMain.handle('project:create', async (_event, projectRoot: string, templateId: string, projectName: string) => {
+  if (isSafeMode) return safeModeError('project creation')
   const result = await createProject(projectRoot, templateId, projectName)
-  extensionService.setWorkspaceRoot(result.path)
+  extensionHostService.setWorkspaceRoot(result.path)
   return result
 })
 
 ipcMain.handle('project:installDependencies', async (_event, projectPath: string) => {
+  if (isSafeMode) return safeModeError('dependency install')
   return installDependencies(projectPath)
 })
 
 ipcMain.handle('project:analyzeWorkspace', async (_event, projectPath: string | null) => {
+  if (isSafeMode) return safeModeError('workspace analysis')
   return analyzeWorkspace(projectPath)
 })
 
 ipcMain.handle('project:createDeployConfig', async (_event, projectPath: string, provider: string) => {
+  if (isSafeMode) return safeModeError('workspace deployment config')
   return createDeployConfig(projectPath, provider)
 })
 
@@ -2219,6 +3268,9 @@ ipcMain.handle('ai:isKeyConfigured', () => {
 
 // ─── IPC: Project Actions ───────────────────────────────────────────────────
 ipcMain.handle('project:new', async () => {
+  if (isSafeMode) {
+    return safeModeError('new project creation')
+  }
   try {
     const result = await dialog.showOpenDialog({
       title: 'Create New Project Folder',
@@ -2227,7 +3279,7 @@ ipcMain.handle('project:new', async () => {
     if (result.canceled || !result.filePaths.length) return { canceled: true }
     const rootPath = result.filePaths[0]
     allowPath(rootPath)
-    extensionService.setWorkspaceRoot(rootPath)
+    extensionHostService.setWorkspaceRoot(rootPath)
     return { path: rootPath }
   } catch (err) {
     return { error: (err as Error).message }
@@ -2235,6 +3287,9 @@ ipcMain.handle('project:new', async () => {
 })
 
 ipcMain.handle('project:clone', async (_event, repoUrl: string) => {
+  if (isSafeMode) {
+    return safeModeError('project clone')
+  }
   try {
     const target = await dialog.showOpenDialog({
       title: 'Select clone destination',
@@ -2245,7 +3300,7 @@ ipcMain.handle('project:clone', async (_event, repoUrl: string) => {
     allowPath(dest)
     const git = simpleGit()
     await git.clone(repoUrl, dest)
-    extensionService.setWorkspaceRoot(dest)
+    extensionHostService.setWorkspaceRoot(dest)
     return { success: true, path: dest }
   } catch (err) {
     return { error: (err as Error).message }
@@ -2274,6 +3329,81 @@ ipcMain.handle('session:logout', async () => {
   }
 })
 
+ipcMain.handle('settings:uploadSync', async (_event, accessToken: string) => {
+  try {
+    const settingsPath = path.join(app.getPath('userData'), 'nexus-settings.json')
+    const registryPath = path.join(app.getPath('userData'), 'registry.json')
+
+    let settings = {}
+    let extensions = []
+
+    try {
+      if (fs.existsSync(settingsPath)) {
+        settings = JSON.parse(await fsPromises.readFile(settingsPath, 'utf-8'))
+      }
+    } catch {}
+
+    try {
+      if (fs.existsSync(registryPath)) {
+        extensions = JSON.parse(await fsPromises.readFile(registryPath, 'utf-8'))
+      }
+    } catch {}
+
+    const payload = {
+      settings,
+      extensions,
+      keybindings: {},
+      themes: {}
+    }
+
+    const response = await fetch('https://api.nexa-ide.com/api/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+      },
+      body: JSON.stringify(payload)
+    })
+
+    if (!response.ok) {
+      throw new Error(`Sync upload failed: ${response.statusText}`)
+    }
+
+    return { success: true }
+  } catch (err: any) {
+    return { error: err.message }
+  }
+})
+
+ipcMain.handle('settings:downloadSync', async (_event, accessToken: string) => {
+  try {
+    const response = await fetch('https://api.nexa-ide.com/api/sync', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`
+      }
+    })
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return { success: true, settings: null }
+      }
+      throw new Error(`Sync download failed: ${response.statusText}`)
+    }
+
+    const data = (await response.json()) as any
+    if (data && data.settings) {
+      const settingsPath = path.join(app.getPath('userData'), 'nexus-settings.json')
+      await fsPromises.writeFile(settingsPath, JSON.stringify(data.settings, null, 2), 'utf-8')
+      return { success: true, settings: data.settings }
+    }
+
+    return { success: true, settings: null }
+  } catch (err: any) {
+    return { error: err.message }
+  }
+})
+
 ipcMain.handle('test:isTestSuiteActive', () => {
   if (process.env.NEXUS_TEST_SUITE) {
     return true
@@ -2282,25 +3412,27 @@ ipcMain.handle('test:isTestSuiteActive', () => {
 })
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
-autoUpdater.on('checking-for-update', () => log.info('AutoUpdater: checking for update'));
-autoUpdater.on('update-available', (info) => {
-  log.info('AutoUpdater: update available', info)
-  mainWindow?.webContents.send('updater:updateAvailable', info)
-});
-autoUpdater.on('update-not-available', (info) => {
-  log.info('AutoUpdater: update not available', info)
-  mainWindow?.webContents.send('updater:updateNotAvailable', info)
-});
-autoUpdater.on('error', (err) => {
-  log.error('AutoUpdater error', err)
-  mainWindow?.webContents.send('updater:error', err)
-});
-autoUpdater.on('download-progress', (progress) => log.info('AutoUpdater download progress', progress));
-autoUpdater.on('update-downloaded', (info) => {
-  log.info('AutoUpdater: update downloaded', info)
-  mainWindow?.webContents.send('updater:updateDownloaded', info)
-  autoUpdater.quitAndInstall()
-});
+if (autoUpdater) {
+  autoUpdater.on('checking-for-update', () => log.info('AutoUpdater: checking for update'));
+  autoUpdater.on('update-available', (info: UpdateInfo) => {
+    log.info('AutoUpdater: update available', info)
+    mainWindow?.webContents.send('updater:updateAvailable', info)
+  });
+  autoUpdater.on('update-not-available', (info: UpdateInfo) => {
+    log.info('AutoUpdater: update not available', info)
+    mainWindow?.webContents.send('updater:updateNotAvailable', info)
+  });
+  autoUpdater.on('error', (err: Error) => {
+    log.error('AutoUpdater error', err)
+    mainWindow?.webContents.send('updater:error', err)
+  });
+  autoUpdater.on('download-progress', (progress: ProgressInfo) => log.info('AutoUpdater download progress', progress));
+  autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+    log.info('AutoUpdater: update downloaded', info)
+    mainWindow?.webContents.send('updater:updateDownloaded', info)
+    autoUpdater.quitAndInstall()
+  });
+}
 
 (app as any).on('before-quit-for-update', () => {
   log.info('AutoUpdater: quitting to install update')
@@ -2312,25 +3444,123 @@ app.on('activate', () => {
   }
 })
 
-const loadSavedUpdateChannel = async (): Promise<'beta' | 'stable'> => {
+const loadSavedUpdateChannel = async (): Promise<'beta' | 'stable' | 'nightly'> => {
   try {
     const settingsPath = path.join(app.getPath('userData'), 'nexus-settings.json')
     const raw = await fsPromises.readFile(settingsPath, 'utf-8')
     const settings = JSON.parse(raw) as Record<string, unknown>
     if (settings.updateChannel === 'stable') return 'stable'
+    if (settings.updateChannel === 'nightly') return 'nightly'
   } catch {
     // fall back to default beta channel
   }
   return 'beta'
 }
 
+// Ensure the OS-visible application name matches the product name
+try {
+  app.setName('Nexa IDE')
+} catch (err) {
+  // Non-fatal if the platform doesn't support setting the app name
+  log.warn('app.setName failed or unsupported on this platform', err)
+}
+
 app.whenReady().then(async () => {
+  if (process.argv.includes('--test-stress')) {
+    log.info('[Electron] Running production stress test suite...')
+    try {
+      const { runStressTests } = await import('./stressTestRunner')
+      const success = await runStressTests()
+      app.quit()
+      process.exit(success ? 0 : 1)
+    } catch (err: any) {
+      log.error('Stress test failed to execute:', err)
+      app.quit()
+      process.exit(1)
+    }
+    return
+  }
+
   try {
+    const oauthConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
+    const diagnostics = {
+      appVersion: app.getVersion(),
+      platform: process.platform,
+      packaged: app.isPackaged,
+      userDataPath: app.getPath('userData'),
+      distPath: process.env.DIST,
+      vitePublic: process.env.VITE_PUBLIC,
+      autoUpdaterStatus: app.isPackaged ? (autoUpdater ? 'enabled' : 'unavailable') : 'disabled-in-dev',
+      oauthConfigured,
+      googleClientIdPresent: Boolean(process.env.GOOGLE_CLIENT_ID),
+      googleClientSecretPresent: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+    }
+
+    log.info('[Electron] startup diagnostics', diagnostics)
+    console.log('[Electron] startup diagnostics', diagnostics)
+    if (!oauthConfigured) {
+      log.warn('[Electron] Google OAuth is not fully configured. GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is missing.')
+      try {
+        const examplePath = path.join(__dirname, '../.env.example')
+        const buttons = [] as string[]
+        if (fs.existsSync(examplePath)) buttons.push('Open .env.example')
+        buttons.push('Open App Folder')
+        buttons.push('Dismiss')
+
+        // Prompt user with quick actions to configure OAuth
+        const resp = await dialog.showMessageBox({
+          type: 'info',
+          title: 'Google OAuth Not Configured',
+          message: 'Google OAuth is not configured. To enable Google Sign-In, add your credentials to a .env file.',
+          detail: 'Copy .env.example to .env and set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, then restart the app.',
+          buttons,
+          defaultId: 0,
+          cancelId: buttons.indexOf('Dismiss'),
+        })
+
+          if (buttons[resp.response] === 'Open .env.example') {
+            // Copy .env.example to a writable location in userData (if not present),
+            // open it, and attempt to load it immediately so the renderer can re-check.
+            try {
+              const userEnvPath = path.join(app.getPath('userData'), '.env')
+              if (!fs.existsSync(userEnvPath) && fs.existsSync(examplePath)) {
+                await fsPromises.mkdir(path.dirname(userEnvPath), { recursive: true }).catch(() => {})
+                await fsPromises.copyFile(examplePath, userEnvPath)
+                console.log('[NEXA] Copied .env.example to', userEnvPath)
+              }
+              // Open the file for the user to edit
+              if (fs.existsSync(userEnvPath)) {
+                await shell.openPath(userEnvPath)
+                // Load newly created/edited env immediately
+                dotenv.config({ path: userEnvPath, override: true })
+                console.log('[NEXA] Loaded .env from', userEnvPath)
+              } else {
+                // Fallback: open example
+                await shell.openPath(examplePath)
+              }
+            } catch (err) {
+              log.warn('Failed to copy/open .env example or load .env', err)
+              await shell.openPath(examplePath)
+            }
+          } else if (buttons[resp.response] === 'Open App Folder') {
+            await shell.openPath(app.getAppPath())
+          }
+      } catch (err) {
+        log.warn('Failed to show OAuth configuration prompt', err)
+      }
+    }
+
+    log.info('[Electron] app.whenReady fired')
+    console.log('[Electron] app.whenReady fired')
     createSplashWindow()
     log.info('[Electron] Starting app initialization...')
     
-    log.info('[Electron] Initializing extension service...')
-    await extensionService.initialize()
+    log.info('[Electron] Initializing extension host service...')
+    if (!isSafeMode) {
+      await extensionHostService.initialize({ builtInMarketplaceRoot: marketplaceRoot })
+    } else {
+      log.warn('[Electron] Skipping extension host initialization in Safe Mode')
+    }
     
     log.info('[Electron] Warming up terminal...')
     await warmUpTerminal()
@@ -2345,6 +3575,7 @@ app.whenReady().then(async () => {
     memoryManager.startMonitoring(30_000)
 
     log.info('[Electron] Creating main window...')
+    console.log('[Electron] Creating main window...')
     await createWindow()
     
     log.info('[Electron] App initialization complete!')

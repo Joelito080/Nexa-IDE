@@ -183,7 +183,7 @@ export default memo(function TitleBar() {
         <NexusLogo />
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] font-bold tracking-[0.18em] text-white/80 uppercase">
-            NEXUS
+            NEXA
           </span>
           <span className="text-[11px] font-bold tracking-[0.18em] gradient-text uppercase">
             IDE
@@ -267,7 +267,7 @@ export default memo(function TitleBar() {
         }}
       >
         <div className="w-1.5 h-1.5 rounded-full bg-[#4ade80] animate-pulse shrink-0" />
-        <span>NEXUS · Local</span>
+        <span>NEXA · Local</span>
       </div>
 
       {/* ── Settings ──────────────────────────────────────────────────────── */}

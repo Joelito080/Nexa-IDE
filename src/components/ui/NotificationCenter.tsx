@@ -42,9 +42,22 @@ export default function NotificationCenter() {
                     <X size={14} />
                   </button>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-slate-100 break-words">
-                  {notification.message}
-                </p>
+                  <p className="mt-2 text-sm leading-6 text-slate-100 break-words">
+                    {notification.message}
+                  </p>
+                  {notification.actions && notification.actions.length > 0 && (
+                    <div className="mt-3 flex gap-2">
+                      {notification.actions.map((a, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => { try { a.handler() } catch {} }}
+                          className="rounded-2xl bg-white/6 px-3 py-1 text-sm text-white/90"
+                        >
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
               </div>
             </div>
           </motion.div>

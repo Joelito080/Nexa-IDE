@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import type { CSSProperties } from 'react'
 
 export default function AuthLoading() {
   return (
@@ -11,7 +12,7 @@ export default function AuthLoading() {
         style={{
           border: '2px solid rgba(139, 92, 246, 0.2)',
           borderTopColor: '#8b5cf6',
-        }}
+        } as CSSProperties}
         animate={{ rotate: 360 }}
         transition={{ duration: 0.9, repeat: Infinity, ease: 'linear' }}
       />

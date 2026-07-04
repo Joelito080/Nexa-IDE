@@ -1,9 +1,9 @@
 import { Worker } from 'worker_threads'
-import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import * as crypto from 'crypto'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const currentFile = __filename
+const __dirname = dirname(currentFile)
 const SEARCH_TIMEOUT = 3000
 
 export interface SearchResult {
@@ -38,7 +38,7 @@ export function searchFiles(options: SearchOptions): Promise<SearchResult[]> {
 
     const timeout = setTimeout(() => finish(results), SEARCH_TIMEOUT)
 
-    worker = new Worker(join(__dirname, 'searchWorker.js'), {
+    worker = new Worker(join(__dirname, 'searchWorker.cjs'), {
       workerData: { searchId, projectPath, query, isRegex: !!isRegex, maxResults },
     })
 
