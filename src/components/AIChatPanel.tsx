@@ -342,7 +342,7 @@ export default function AIChatPanel() {
   const [attachedFiles, setAttachedFiles] = useState<string[]>([])
   const [showCommandMenu, setShowCommandMenu] = useState(false)
   const [commandFilterIdx, setCommandFilterIdx] = useState(0)
-  const [systemPrompt, setSystemPrompt] = useState('You are Nexus Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.')
+  const [systemPrompt, setSystemPrompt] = useState('You are Nexa Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.')
   const [showSystemPrompt, setShowSystemPrompt] = useState(true)
   const [showUserPrompt, setShowUserPrompt] = useState(true)
   const [showSelectedFile, setShowSelectedFile] = useState(true)
@@ -444,7 +444,7 @@ export default function AIChatPanel() {
     setShowWorkspaceContext(true)
     
     // Reset system prompt to default
-    setSystemPrompt('You are Nexus Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.')
+    setSystemPrompt('You are Nexa Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.')
     
     // Reset AI mode
     setAiMode('chat')
@@ -1785,7 +1785,7 @@ export default function AIChatPanel() {
               >
                 <div className="flex items-center gap-1.5 px-1 select-none text-[8.5px] text-[#475569]">
                   {!isUser && <Bot size={9} className="text-[#a855f7]" />}
-                  <span className="font-semibold">{isUser ? 'User' : 'Nexus Assistant'}</span>
+                  <span className="font-semibold">{isUser ? 'User' : 'Nexa Assistant'}</span>
                   <span>•</span>
                   <span className="font-mono text-[8px]">{formatTime(msg.timestamp)}</span>
                 </div>

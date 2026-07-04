@@ -49,10 +49,10 @@ export default function App() {
     'Windows PowerShell',
     'Copyright (C) Microsoft Corporation. All rights reserved.',
     '',
-    'PS D:\\Projects\\nexus-app> npm run build',
+    'PS D:\\Projects\\nexa-app> npm run build',
     '  tsc --noEmit && vite build',
-    '  âœ“ built in 1.84s',
-    'PS D:\\Projects\\nexus-app> '
+    '  ✓ built in 1.84s',
+    'PS D:\\Projects\\nexa-app> '
   ])
   const [newTerminalCmd, setNewTerminalCmd] = useState('')
 
@@ -143,7 +143,7 @@ Would you like me to automatically apply this refactoring across the file?`
     if (!newTerminalCmd.trim()) return
 
     const cmd = newTerminalCmd.trim()
-    let response = [`PS D:\\Projects\\nexus-app> ${cmd}`]
+    let response = [`PS D:\\Projects\\nexa-app> ${cmd}`]
 
     if (cmd === 'git status') {
       response.push(
@@ -164,8 +164,8 @@ Would you like me to automatically apply this refactoring across the file?`
     } else if (cmd.startsWith('npm run')) {
       response.push(
         'Running script...',
-        'âœ“ tsc check passed',
-        'âœ“ client build compiled (2.1s)'
+        '✓ tsc check passed',
+        '✓ client build compiled (2.1s)'
       )
     } else {
       response.push(`Command '${cmd}' executed successfully.`)
@@ -358,7 +358,7 @@ Would you like me to automatically apply this refactoring across the file?`
                   <FolderTree size={12} />
                 </div>
                 <div className="p-2 space-y-1 text-slate-400 overflow-y-auto">
-                  <div className="text-[11px] font-bold text-slate-500 px-1 py-0.5">NEXUS-APP</div>
+                  <div className="text-[11px] font-bold text-slate-500 px-1 py-0.5">NEXA-APP</div>
                   <div className="pl-3 py-1 text-slate-500">ðŸ“ electron</div>
                   <div className="pl-3 py-1 text-slate-500">ðŸ“ src</div>
                   <div className="pl-6 py-0.5 hover:text-white cursor-pointer flex items-center gap-1.5" onClick={() => setActiveTab('safetyRules.ts')}>
@@ -464,7 +464,7 @@ Would you like me to automatically apply this refactoring across the file?`
                     </div>
                   ))}
                   <form onSubmit={handleTerminalSubmit} className="flex items-center">
-                    <span className="text-slate-500 mr-1.5 select-none">PS D:\Projects\nexus-app&gt;</span>
+                    <span className="text-slate-500 mr-1.5 select-none">PS D:\Projects\nexa-app&gt;</span>
                     <input
                       type="text"
                       value={newTerminalCmd}
@@ -482,7 +482,7 @@ Would you like me to automatically apply this refactoring across the file?`
               <div className="p-3 border-b border-brand-border bg-black/20 flex items-center justify-between text-slate-400 select-none">
                 <div className="flex items-center gap-2">
                   <Sparkles size={14} className="text-brand-violet" />
-                  <span className="text-[11px] font-bold tracking-wider uppercase text-white">Nexus Assistant</span>
+                  <span className="text-[11px] font-bold tracking-wider uppercase text-white">Nexa Assistant</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="px-1.5 py-0.5 rounded bg-brand-accent/20 border border-brand-accent/30 text-[9px] font-bold text-brand-violet">
@@ -501,7 +501,7 @@ Would you like me to automatically apply this refactoring across the file?`
                 <div className="self-start max-w-[90%] rounded-2xl rounded-tl-none bg-brand-accent/5 border border-brand-accent/15 p-3 text-[11.5px] leading-relaxed text-slate-300 relative overflow-hidden">
                   <div className="font-bold text-[10px] text-brand-violet mb-1 flex items-center gap-1.5">
                     <Cpu size={10} className="animate-spin-slow" />
-                    NexusAI (Streaming)
+                    NexaAI (Streaming)
                   </div>
                   <div className="whitespace-pre-wrap font-mono text-[10.5px]">
                     {aiTypingText}
@@ -590,7 +590,7 @@ Would you like me to automatically apply this refactoring across the file?`
               A Copilot that Knows <br /> Your Workspace
             </h2>
             <p className="text-slate-400 text-sm leading-relaxed mb-8">
-              The Nexus AI assistant indexes your folder tree, reads compiler diagnostics, and streams responses instantly through OpenRouter â€” one API key unlocks a broad set of leading models.
+              The Nexa AI assistant indexes your folder tree, reads compiler diagnostics, and streams responses instantly through OpenRouter — one API key unlocks a broad set of leading models.
             </p>
 
             <div className="space-y-4 font-sans text-xs">

@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { useState, useEffect } from 'react'
 import { 
@@ -175,7 +175,7 @@ export default function DocsPage() {
       <div className="max-w-6xl w-full mb-12 text-left relative z-10">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-400 font-semibold mb-4">
           <Sparkles size={11} />
-          <span>Nexus Documentation Hub</span>
+          <span>Nexa Documentation Hub</span>
         </div>
         <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
           How to configure, code, and deploy.

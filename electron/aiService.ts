@@ -1,8 +1,22 @@
-import { app } from 'electron'
 import { existsSync } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { isPathInsideWorkspace } from './safetyRules'
+
+// Safely resolve Electron app if running in Electron environment
+let app: any = null
+try {
+  app = require('electron').app
+} catch {
+  // Safe mode or pure Node.js child process environment
+}
+
+function getUserDataPath(): string {
+  if (process.env.USER_DATA_PATH) {
+    return process.env.USER_DATA_PATH
+  }
+  return app ? app.getPath('userData') : ''
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -103,7 +117,7 @@ export async function getBudgetStatus(): Promise<{ date: string; dailySpend: num
 
 async function getBudgetData(): Promise<BudgetData> {
   try {
-    const filePath = path.join(app.getPath('userData'), 'nexus-ai-budget.json')
+    const filePath = path.join(getUserDataPath(), 'nexus-ai-budget.json')
     const today = new Date().toISOString().split('T')[0]
     const raw = await fs.readFile(filePath, 'utf-8')
     const data = JSON.parse(raw) as BudgetData
@@ -123,7 +137,7 @@ async function updateSpend(cost: number): Promise<number> {
   try {
     const data = await getBudgetData()
     data.dailySpend += cost
-    const filePath = path.join(app.getPath('userData'), 'nexus-ai-budget.json')
+    const filePath = path.join(getUserDataPath(), 'nexus-ai-budget.json')
     await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
     return data.dailySpend
   } catch {
@@ -192,7 +206,7 @@ export async function fetchOpenRouterModels(forceRefresh = false): Promise<OpenR
     return cachedModels
   }
 
-  const cachePath = path.join(app.getPath('userData'), 'openrouter-models-cache.json')
+  const cachePath = path.join(getUserDataPath(), 'openrouter-models-cache.json')
 
   if (!forceRefresh) {
     try {

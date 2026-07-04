@@ -1051,7 +1051,7 @@ export default function AppShell() {
                     className="flex flex-col flex-1 min-h-0 h-full overflow-hidden"
                   >
                     <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-slate-400">Loading AI panel…</div>}>
-                      <ComponentErrorBoundary title="AI panel error" message="NEXUS AI failed to load.">
+                      <ComponentErrorBoundary title="AI panel error" message="NEXA AI failed to load.">
                         <div className="flex flex-col h-full min-h-0 overflow-hidden">
                           <AIPanel />
                         </div>

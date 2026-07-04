@@ -4,6 +4,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import { fork, ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import log from 'electron-log'
 
 interface HostRequest {
   requestId: string
@@ -102,8 +103,23 @@ export class ExtensionHostService {
       throw new Error(`Extension host script not found: ${scriptPath}`)
     }
     this.hostProcess = fork(scriptPath, [], {
-      env: { ...process.env, EXTENSION_STORAGE_ROOT: this.extensionStorageRoot, EXTENSION_REGISTRY_PATH: this.registryPath, EXTENSION_STATE_PATH: this.statePath },
+      execPath: process.execPath,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        EXTENSION_STORAGE_ROOT: this.extensionStorageRoot,
+        EXTENSION_REGISTRY_PATH: this.registryPath,
+        EXTENSION_STATE_PATH: this.statePath,
+        USER_DATA_PATH: app.getPath('userData'),
+      },
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    })
+
+    this.hostProcess.stdout?.on('data', (chunk) => {
+      log.info(`[ExtensionHost stdout] ${chunk.toString().trim()}`)
+    })
+    this.hostProcess.stderr?.on('data', (chunk) => {
+      log.error(`[ExtensionHost stderr] ${chunk.toString().trim()}`)
     })
 
     this.hostProcess.on('message', (message: HostResponse | HostEvent) => {

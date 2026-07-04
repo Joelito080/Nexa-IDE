@@ -8,6 +8,7 @@ dist/
 dist-electron/
 build/
 release/
+.tmp-pack/
 
 # AI ignore patterns
 package-lock.json
@@ -52,7 +53,7 @@ ehthumbs.db
 Thumbs.db
 
 # Editor
-.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -85,3 +86,14 @@ err.log
 
 # Handle utility
 handle.exe
+
+# Executables and Archives
+*.exe
+*.blockmap
+*.zip
+
+# Local sessions and crash files
+crash-history.json
+last-crash.json
+ai-sessions.json
+marketplace-cache.json

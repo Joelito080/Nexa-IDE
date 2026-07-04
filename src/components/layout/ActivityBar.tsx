@@ -22,7 +22,7 @@ const TABS: Tab[] = [
   { id: 'debug',      icon: <Bug size={19} />,        label: 'Run & Debug',     position: 'top' },
   { id: 'database',   icon: <Database size={19} />,   label: 'Database',        position: 'top' },
   { id: 'extensions', icon: <Blocks size={19} />,     label: 'Extensions',      position: 'top' },
-  { id: 'ai',         icon: <Bot size={19} />,        label: 'NEXUS AI',        position: 'bottom' },
+  { id: 'ai',         icon: <Bot size={19} />,        label: 'NEXA AI',        position: 'bottom' },
   { id: 'settings',   icon: <Settings2 size={19} />,  label: 'Settings',        position: 'bottom' },
 ]
 

@@ -1,4 +1,4 @@
-﻿import React from 'react'
+import React from 'react'
 import { motion } from 'framer-motion'
 import { ArrowRight, Terminal, Shield, Cpu, Sparkles } from 'lucide-react'
 import AIChatPanel from '@/components/AIChatPanel'
@@ -74,7 +74,7 @@ export default function Hero() {
               <div className="w-3 h-3 rounded-full bg-amber-500/80" />
               <div className="w-3 h-3 rounded-full bg-emerald-500/80" />
             </div>
-            <span className="text-[10px] text-slate-500 font-mono tracking-wider font-semibold">NEXUS MOCKUP PREVIEW</span>
+            <span className="text-[10px] text-slate-500 font-mono tracking-wider font-semibold">NEXA MOCKUP PREVIEW</span>
             <div className="w-12" />
           </div>
 

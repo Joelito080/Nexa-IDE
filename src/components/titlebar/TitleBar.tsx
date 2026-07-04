@@ -12,7 +12,7 @@ import {
 } from '../../hooks/useAppStoreSelectors'
 import { loadGitStatus } from '../../lib/gitUtils'
 
-// ── NEXUS Hexagon Logo ───────────────────────────────────────────────────────
+// ── NEXA Hexagon Logo ────────────────────────────────────────────────────────
 function NexusLogo({ size = 22 }: { size?: number }) {
   return (
     <svg

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Bot, Send, Sparkles, FileCode, Settings, Copy, Check,
@@ -430,7 +430,7 @@ export default function NexusAssistant() {
   const [temperature, setTemperature] = useState(0.5)
   const [maxTokens, setMaxTokens] = useState(4096)
   const [topP, setTopP] = useState(0.9)
-  const [systemPrompt, setSystemPrompt] = useState('You are Nexus Assistant, an expert AI coding assistant built into NEXA IDE. Be concise, precise, and output well-formatted code.')
+  const [systemPrompt, setSystemPrompt] = useState('You are Nexa Assistant, an expert AI coding assistant built into NEXA IDE. Be concise, precise, and output well-formatted code.')
   const [showSystemPrompt, setShowSystemPrompt] = useState(true)
   const [showAttachedFiles, setShowAttachedFiles] = useState(true)
   const [showSelectedFile, setShowSelectedFile] = useState(true)
@@ -1552,7 +1552,7 @@ export default function NexusAssistant() {
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#8b5cf6]/10 to-cyan-500/10 border border-white/[0.06] flex items-center justify-center mb-4">
                 <Sparkles size={22} className="text-[#a855f7]" />
               </div>
-              <p className="text-[12px] font-semibold text-[#cbd5e1] mb-1">Nexus AI Assistant</p>
+              <p className="text-[12px] font-semibold text-[#cbd5e1] mb-1">Nexa AI Assistant</p>
               <p className="text-[10px] text-[#475569] max-w-[200px] leading-relaxed">
                 OpenRouter engine activated. Stream live from 100+ models. Use commands below:
               </p>
@@ -1584,7 +1584,7 @@ export default function NexusAssistant() {
                 {/* Meta row */}
                 <div className="flex items-center gap-1.5 px-0.5 text-[8.5px] text-[#3d4461] select-none">
                   {!isUser && <Bot size={9} className="text-[#a855f7]" />}
-                  <span className="font-medium">{isUser ? 'You' : 'Nexus'}</span>
+                  <span className="font-medium">{isUser ? 'You' : 'Nexa'}</span>
                   <span>Â·</span>
                   <span className="font-mono text-[8px]">{formatTime(msg.timestamp)}</span>
                 </div>

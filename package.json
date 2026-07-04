@@ -1,7 +1,7 @@
 {
   "name": "nexa-ide",
   "version": "1.1.0",
-  "description": "NEXA IDE â€” OpenRouter AI Development Environment",
+  "description": "NEXA IDE — OpenRouter AI Development Environment",
   "main": "dist-electron/main.cjs",
   "type": "module",
   "author": "NEXA IDE",
@@ -77,9 +77,10 @@
     "wait-on": "^7.0.1"
   },
   "build": {
+    "npmRebuild": false,
     "appId": "com.nexa.ide",
     "productName": "Nexa IDE",
-    "copyright": "Copyright Â© 2026 NEXA IDE",
+    "copyright": "Copyright © 2026 NEXA IDE",
     "publish": [
       {
         "provider": "github",
