@@ -3,11 +3,12 @@ import { List } from 'react-window'
 import { EmptyState } from '../ui/EmptyState'
 import {
   FolderOpen, FilePlus, FolderPlus, RefreshCw,
-  Search, GitBranch, Bug, Blocks, ChevronRight, Loader2,
+  Search, GitBranch, Bug, Blocks, ChevronRight, Loader2, AlertCircle,
   Star, Download, Trash2, Check, Sparkles, Code, Palette, Puzzle,
   LogOut, User
 } from 'lucide-react'
 import { useAppStore, ExplorerEntry, SearchResult } from '../../store/appStore'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import { loadGitStatus } from '../../lib/gitUtils'
 import { useAppModal } from '../ui/ModalDialog'
 import { openFile as openFileFs, readDir, invalidateDirCache, onDirCacheInvalidation, IGNORE_DIRS, MAX_DEPTH, MAX_FOLDER_ENTRIES, normalizeDirKey } from '../../lib/fileSystem'
@@ -195,6 +196,17 @@ const ExplorerPanel = memo(function ExplorerPanel({
   const unstaged = useGitStore((s) => s.unstaged)
   const untracked = useGitStore((s) => s.untracked)
 
+  const workspaceLoading = useWorkspaceStore((s) => s.loading)
+  const workspaceError = useWorkspaceStore((s) => s.error)
+  const failedPath = useWorkspaceStore((s) => s.failedPath)
+
+  useEffect(() => {
+    if (rootPath && flatTree.length > 0) {
+      console.log('[Workspace] Explorer rendered, notifying main process')
+      window.electronAPI?.workspace.notifyExplorerRendered(rootPath)
+    }
+  }, [rootPath, flatTree.length])
+
   const gitStatusMap = useMemo(() => {
     const map = new Map<string, { type: 'staged' | 'unstaged' | 'untracked'; status: string }>()
     if (!rootPath) return map
@@ -234,7 +246,36 @@ const ExplorerPanel = memo(function ExplorerPanel({
 
       {/* Project explorer — virtualized tree */}
       <div className="flex-1 flex flex-col min-h-0">
-        {!rootPath ? (
+        {workspaceError ? (
+          <div className="flex flex-col items-center justify-center p-6 text-center space-y-4">
+            <AlertCircle size={24} className="text-red-500" />
+            <div className="text-sm font-semibold text-white">Workspace failed to load</div>
+            <div className="text-xs text-slate-400 max-w-[180px] truncate">{workspaceError}</div>
+            <div className="flex flex-col gap-2 w-full max-w-[160px]">
+              <button
+                onClick={() => {
+                  if ((window as any).loadDirectory && failedPath) {
+                    ;(window as any).loadDirectory(failedPath)
+                  }
+                }}
+                className="w-full rounded-xl bg-purple-600 hover:bg-purple-700 py-2 text-xs font-semibold text-white transition-colors"
+              >
+                Retry
+              </button>
+              <button
+                onClick={onOpenFolder}
+                className="w-full rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 py-2 text-xs font-semibold text-slate-200 transition-colors"
+              >
+                Select another folder
+              </button>
+            </div>
+          </div>
+        ) : workspaceLoading ? (
+          <div className="flex flex-col items-center justify-center p-6 text-center space-y-3">
+            <Loader2 className="animate-spin text-purple-500" size={24} />
+            <div className="text-xs text-slate-400">Loading workspace…</div>
+          </div>
+        ) : !rootPath ? (
           <EmptyState
             icon={<FolderOpen size={22} />}
             title="No folder opened"
@@ -243,7 +284,32 @@ const ExplorerPanel = memo(function ExplorerPanel({
             onCta={onOpenFolder}
           />
         ) : flatTree.length === 0 ? (
-          <div className="p-4 text-[10px] text-[#3d4661] text-center">Loading…</div>
+          workspaceLoading ? (
+            <div className="flex flex-col items-center justify-center p-6 text-center space-y-3">
+              <Loader2 className="animate-spin text-[#8b5cf6]" size={24} />
+              <div className="text-xs text-slate-400">Loading workspace…</div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center p-6 text-center space-y-4">
+              <AlertCircle size={24} className="text-slate-500" />
+              <div className="text-sm font-semibold text-white">Empty Workspace</div>
+              <div className="text-xs text-slate-400 max-w-[180px]">
+                This folder is empty. Ask the AI in the chat panel to generate a project structure automatically.
+              </div>
+              <button
+                onClick={() => {
+                  const chatInput = document.querySelector('textarea')
+                  if (chatInput) {
+                    chatInput.value = 'Build me a barber shop website'
+                    chatInput.focus()
+                  }
+                }}
+                className="rounded-xl bg-purple-600 hover:bg-purple-700 px-4 py-2 text-xs font-semibold text-white transition-colors"
+              >
+                Create Barber Shop Web App
+              </button>
+            </div>
+          )
         ) : (
           <>
             <p className="shrink-0 text-[10px] uppercase tracking-[0.2em] text-[#3d4661] px-4 pb-1 pt-2 truncate">
@@ -1304,6 +1370,15 @@ export default memo(function Sidebar() {
     for (const key of map.keys()) {
       if (key === norm || key.startsWith(norm + '/')) map.delete(key)
     }
+
+    // ── Set workspace root in main process BEFORE any fs call ──────────────
+    // Without this, fs:readDir rejects with 'Access denied: path is outside
+    // the workspace' because workspaceEngine still holds the old/null root.
+    if (window.electronAPI?.app?.allowPath) {
+      window.electronAPI.app.allowPath(folderPath)
+    }
+    await window.electronAPI?.workspace.setRoot(folderPath)
+
     const entries = await loadDirIntoCache(folderPath)
     if (!entries) return
 
@@ -1344,12 +1419,13 @@ export default memo(function Sidebar() {
 
   const openFolder = useCallback(async () => {
     const folderPath = await window.electronAPI?.dialog.openFolder()
-    if (folderPath) {
-      if ((window as any).loadDirectory) {
-        await (window as any).loadDirectory(folderPath)
-      } else {
-        await loadDirectory(folderPath)
-      }
+    if (!folderPath || typeof folderPath !== 'string') return
+    // Prefer AppShell's full loadDirectory (clears tabs, resets all state).
+    // Fall back to local loadDirectory which now also sets workspace root.
+    if ((window as any).loadDirectory) {
+      await (window as any).loadDirectory(folderPath)
+    } else {
+      await loadDirectory(folderPath)
     }
   }, [loadDirectory])
 

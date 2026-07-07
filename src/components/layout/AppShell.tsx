@@ -80,6 +80,8 @@ export default function AppShell() {
       return false
     }
 
+    console.log('[Workspace] Folder selected:', folderPath)
+
     // ── Step 1: Immediately clear old state in both renderer AND main process ──
     // This must happen synchronously before any await so no IPC call can slip
     // through with the stale workspace root still set on the main process.
@@ -88,67 +90,118 @@ export default function AppShell() {
     invalidateDirCache()
     closeAllTabs()
     clearFileCache()
-
-    // Clear the root on the main process immediately — this is the fix for the
-    // race condition where readDir/readFile calls were validated against the OLD
-    // workspace root because workspace.mount() was called too late.
-    await window.electronAPI?.workspace.setRoot(null)
-
+    
+    useWorkspaceStore.getState().setError(null)
     useWorkspaceStore.getState().setLoading(true)
 
-    try {
-      // ── Step 2: Allow path + set NEW root BEFORE any filesystem call ──────
-      // workspace.setRoot sets workspaceEngine root + clears main-process cache
-      // so the safety validator sees the correct root on the very first readDir.
-      if (window.electronAPI?.app?.allowPath) {
-        window.electronAPI.app.allowPath(folderPath)
+    let timeoutId: any
+    let attempts = 0
+    const maxAttempts = 3
+    let success = false
+    let lastError: any = null
+
+    while (attempts < maxAttempts && !success) {
+      attempts++
+      try {
+        const api = window.electronAPI
+        const workspace = api?.workspace || {
+          mount: async () => ({ error: 'Workspace API not available' }),
+          snapshot: async () => null,
+          listFiles: async () => [],
+          loadTree: async () => [],
+          setCwd: async () => {},
+          syncOpenFiles: async () => {},
+          setRoot: async () => {},
+          getRoot: async () => null,
+          validate: async () => ({ isValid: false, error: 'Workspace API not available' }),
+          notifyExplorerRendered: () => {},
+        }
+
+        console.log(`[Workspace] setRoot(null) - attempt ${attempts}`)
+        await workspace.setRoot(null).catch(() => {})
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(new Error('Workspace loading timed out after 10 seconds'))
+          }, 10000)
+        })
+
+        const loadPromise = (async () => {
+          console.log('[Workspace] Validating folder...')
+          const validation = await workspace.validate(folderPath)
+          if (!validation || !validation.isValid) {
+            throw new Error(validation?.error || 'Folder validation failed')
+          }
+
+          console.log('[Workspace] setRoot()')
+          if (api?.app?.allowPath) {
+            api.app.allowPath(folderPath)
+          }
+          await workspace.setRoot(folderPath)
+
+          console.log('[Workspace] Reading directory')
+          if (!api?.fs) {
+            throw new Error('window.electronAPI.fs is not defined')
+          }
+          const response = await api.fs.readDir(folderPath)
+          if (!response || (response as any).error) {
+            throw new Error((response as any)?.error || 'Failed to read directory')
+          }
+
+          const separator = getPathSeparator(folderPath)
+          const entries = (response as any[]).map((entry) => ({
+            name: entry.name,
+            path: `${folderPath}${folderPath.endsWith(separator) ? '' : separator}${entry.name}`,
+            isDirectory: entry.isDirectory,
+            isFile: entry.isFile,
+          }))
+
+          actions.setRootPath(folderPath)
+          actions.setCurrentFolder(folderPath)
+          actions.setExplorerEntries(entries)
+          actions.setSelectedFilePath(null)
+          actions.setSidebarOpen(true)
+          actions.setSidebarTab('explorer')
+
+          const snapshot = await workspace.mount(folderPath)
+          if (!snapshot || (snapshot as any).error) {
+            throw new Error((snapshot as any)?.error || 'Failed to mount workspace')
+          }
+
+          useWorkspaceStore.getState().setSnapshot(snapshot as any)
+          addRecentProject(folderPath)
+          await loadGitStatus(folderPath).catch(() => {})
+          return true
+        })()
+
+        const result = await Promise.race([loadPromise, timeoutPromise])
+        success = true
+        return result
+      } catch (err: any) {
+        lastError = err
+        console.warn(`[Workspace] Load attempt ${attempts} failed:`, err)
+        if (attempts < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+        }
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId)
+          timeoutId = null
+        }
       }
-      await window.electronAPI?.workspace.setRoot(folderPath)
-
-      // ── Step 3: Now safely read filesystem — root is already correct ───────
-      const response = await window.electronAPI?.fs.readDir(folderPath)
-      if (!response || (response as any).error) {
-        // If readDir fails, clear root again so we don't sit on a broken state
-        await window.electronAPI?.workspace.setRoot(null)
-        useWorkspaceStore.getState().setLoading(false)
-        return false
-      }
-
-      const separator = getPathSeparator(folderPath)
-      const entries = (response as any[]).map((entry) => ({
-        name: entry.name,
-        path: `${folderPath}${folderPath.endsWith(separator) ? '' : separator}${entry.name}`,
-        isDirectory: entry.isDirectory,
-        isFile: entry.isFile,
-      }))
-
-      // ── Step 4: Update renderer store state ───────────────────────────────
-      actions.setRootPath(folderPath)
-      actions.setCurrentFolder(folderPath)
-      actions.setExplorerEntries(entries)
-      actions.setSelectedFilePath(null)
-      actions.setSidebarOpen(true)
-      actions.setSidebarTab('explorer')
-
-      // ── Step 5: Full workspace mount (file tree, watcher, memory) ─────────
-      // This is intentionally after the UI is already showing the new folder,
-      // so the explorer feels instant while the heavier setup happens in bg.
-      const snapshot = await window.electronAPI?.workspace.mount(folderPath)
-      if (snapshot && !(snapshot as any).error) {
-        useWorkspaceStore.getState().setSnapshot(snapshot as any)
-      }
-
-      addRecentProject(folderPath)
-      await loadGitStatus(folderPath)
-      return true
-    } catch (err) {
-      console.error('[loadDirectory] Workspace loading failed:', err)
-      // Ensure root is never left in a half-set state on error
-      await window.electronAPI?.workspace.setRoot(null).catch(() => {})
-      return false
-    } finally {
-      useWorkspaceStore.getState().setLoading(false)
     }
+
+    if (!success) {
+      console.error('[loadDirectory] All workspace load attempts failed:', lastError)
+      const errorMsg = lastError?.message || 'Workspace failed to load.'
+      useWorkspaceStore.getState().setError(errorMsg, folderPath)
+      if (window.electronAPI?.workspace) {
+        await window.electronAPI.workspace.setRoot(null).catch(() => {})
+      }
+      useWorkspaceStore.getState().setLoading(false)
+      return false
+    }
+    useWorkspaceStore.getState().setLoading(false)
   // actions is a stable Zustand slice — safe in deps
   }, [actions]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -808,9 +861,20 @@ export default function AppShell() {
   // Listen to file system changes from the main process watcher
   useEffect(() => {
     if (!rootPath) return
-    const unsub = window.electronAPI?.on('workspace:changed', (event: any) => {
+    const unsub = window.electronAPI?.on('workspace:changed', async (event: any) => {
       console.log('[Watcher] Workspace changed, invalidating cache:', event)
       invalidateDirCache(rootPath)
+      try {
+        const workspaceApi = window.electronAPI?.workspace
+        if (workspaceApi) {
+          const snapshot = await workspaceApi.snapshot()
+          if (snapshot && !snapshot.error) {
+            useWorkspaceStore.getState().setSnapshot(snapshot)
+          }
+        }
+      } catch (err) {
+        console.error('[Watcher] Failed to refresh snapshot on workspace:changed:', err)
+      }
     })
     return () => {
       unsub?.()

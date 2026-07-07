@@ -1,6 +1,18 @@
-﻿# Changelog â€” NEXA IDE
+# Changelog â€” NEXA IDE
 
 All notable changes, enhancements, and system releases for NEXA IDE will be documented in this file.
+
+---
+
+## [v1.1.0-rc1] â€” 2026-07-07
+
+This Release Candidate 1 (RC1) introduces the True IDE Agent Architecture, enabling senior software engineering behaviors, search-first project context parsing, and real-time context debugging inspectors.
+
+### âœ¨ What Changed
+* **True IDE Agent Architecture**: Automatically search, read, and resolve workspace files before responding.
+* **Workspace Context Engine**: Injects tech stack detection, open files, active selections, and diagnostics into the prompt.
+* **Context Inspector**: Collapsible developer debugging panel showing token sizes, fallback paths, and search-results.
+* **Dependency Caching**: Performance optimization using file `mtime` cache, avoiding redundant codebase scans.
 
 ---
 

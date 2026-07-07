@@ -22,7 +22,7 @@ class TelemetryManager {
     try {
       const raw = await fs.readFile(this.getSettingsPath(), 'utf-8')
       const settings = JSON.parse(raw)
-      return !!settings.telemetryEnabled
+      return settings.telemetryEnabled === true
     } catch {
       return false
     }

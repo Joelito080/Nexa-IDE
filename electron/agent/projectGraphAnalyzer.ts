@@ -81,6 +81,9 @@ async function readPackageDependencies(rootPath: string): Promise<string[]> {
   }
 }
 
+let cachedGraph: ProjectGraph | null = null
+const fileMtimes = new Map<string, number>()
+
 export async function buildDependencyGraph(rootPath: string): Promise<ProjectGraph> {
   workspaceEngine.setRoot(rootPath)
   await workspaceEngine.loadFileTree()
@@ -89,19 +92,36 @@ export async function buildDependencyGraph(rootPath: string): Promise<ProjectGra
   const fileSet = new Set(files)
   const nodes: Record<string, DependencyNode> = {}
 
+  if (cachedGraph && cachedGraph.rootPath !== rootPath) {
+    cachedGraph = null
+    fileMtimes.clear()
+  }
+
   for (const filePath of files) {
     try {
-      const content = await fsPromises.readFile(filePath, 'utf-8')
-      const imports = extractImportSources(content)
-      const dependencies = imports
-        .map((source) => resolveImportPath(source, filePath, rootPath, fileSet))
-        .filter((resolved): resolved is string => Boolean(resolved))
+      const stats = fs.statSync(filePath)
+      const mtime = stats.mtimeMs
+      const cachedMtime = fileMtimes.get(filePath)
 
-      nodes[filePath] = {
-        filePath,
-        imports,
-        dependencies,
-        importedBy: [],
+      if (cachedMtime === mtime && cachedGraph && cachedGraph.nodes[filePath]) {
+        nodes[filePath] = {
+          ...cachedGraph.nodes[filePath],
+          importedBy: []
+        }
+      } else {
+        const content = await fsPromises.readFile(filePath, 'utf-8')
+        const imports = extractImportSources(content)
+        const dependencies = imports
+          .map((source) => resolveImportPath(source, filePath, rootPath, fileSet))
+          .filter((resolved): resolved is string => Boolean(resolved))
+
+        nodes[filePath] = {
+          filePath,
+          imports,
+          dependencies,
+          importedBy: [],
+        }
+        fileMtimes.set(filePath, mtime)
       }
     } catch {
       nodes[filePath] = {
@@ -122,7 +142,9 @@ export async function buildDependencyGraph(rootPath: string): Promise<ProjectGra
   }
 
   const packageDependencies = await readPackageDependencies(rootPath)
-  return { rootPath, files, nodes, packageDependencies }
+  const newGraph = { rootPath, files, nodes, packageDependencies }
+  cachedGraph = newGraph
+  return newGraph
 }
 
 export function findRelevantFiles(task: string, graph: ProjectGraph, snapshot: WorkspaceSnapshot): string[] {

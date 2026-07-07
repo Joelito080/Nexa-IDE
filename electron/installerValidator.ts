@@ -33,9 +33,9 @@ export async function verifyInstallerHash(
       stream.on('end', () => {
         const calculatedHash = hash.digest('base64') // electron-builder stores hashes in base64 inside latest.yml
         const calculatedHex = hash.copy().digest('hex') // also support hex
-        
-        const matches = expectedHash 
-          ? (calculatedHash === expectedHash || calculatedHex === expectedHash.toLowerCase()) 
+
+        const matches = expectedHash
+          ? (calculatedHash === expectedHash || calculatedHex === expectedHash.toLowerCase())
           : true
 
         log.info(`[InstallerValidator] SHA-512 calculation complete. Matches: ${matches}`)

@@ -127,7 +127,7 @@ export default function StatusBar() {
         />
         <div style={{ width: 8 }} />
         <div className="text-[11px] text-white/90">
-          {licenseLoading ? 'Checking license…' : licenseStatus ? `${licenseStatus.plan.toUpperCase()}` : 'No license'}
+          {licenseLoading ? 'Checking license…' : licenseStatus ? `${licenseStatus.plan.toUpperCase()} · ${licenseStatus.creditBalance ?? 0} credits` : 'No license'}
         </div>
         <button
           type="button"

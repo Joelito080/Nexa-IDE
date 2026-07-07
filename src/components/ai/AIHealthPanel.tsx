@@ -99,6 +99,8 @@ export default function AIHealthPanel() {
         <div><strong>Error Count:</strong> <div className="text-slate-300 inline">{state.errorCount ?? 0}</div></div>
         <div><strong>Reset Count:</strong> <div className="text-slate-300 inline">{state.resetCount ?? 0}</div></div>
         <div className="col-span-2"><strong>Recovery Available:</strong> <div className="text-slate-300 inline">{state.recoveryAvailable ? 'Yes' : 'No'}</div></div>
+        <div><strong>Tier:</strong> <div className={`inline text-[11px] font-semibold ${(state.activeModel || '').endsWith(':free') ? 'text-emerald-400' : 'text-amber-400'}`}>{(state.activeModel || '').endsWith(':free') ? 'FREE' : 'PREMIUM'}</div></div>
+        <div><strong>Fallback:</strong> <div className="text-slate-300 inline">{state.fallbackStatus || 'Ready'}</div></div>
       </div>
     </div>
   )

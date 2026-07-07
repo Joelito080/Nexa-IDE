@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { askAI } from './aiService'
-import { isAllowedProgram, sanitizeCommand } from './safetyRules'
+import { isAllowedProgram, sanitizeCommand, isPathInsideWorkspace } from './safetyRules'
 
 const __filename = process.argv[1] ?? fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -392,11 +392,46 @@ export class ExtensionHost {
         workspace: {
           getRootPath: () => this.workspaceRoot,
           getActiveFile: () => this.activeFilePath,
-          readFile: async (target: string) => ({ content: await fsPromises.readFile(target, 'utf-8') }),
-          writeFile: async (target: string, content: string) => ({ success: await fsPromises.writeFile(target, content, 'utf-8'), target }),
-          createFolder: async (target: string) => ({ success: await fsPromises.mkdir(target, { recursive: true }) !== undefined, target }),
-          delete: async (target: string) => ({ success: await fsPromises.rm(target, { recursive: true, force: true }) !== undefined, target }),
-          rename: async (oldPath: string, newPath: string) => ({ success: await fsPromises.rename(oldPath, newPath) !== undefined, oldPath, newPath }),
+          readFile: async (target: string) => {
+            const resolved = path.resolve(this.workspaceRoot || '', target)
+            if (!this.workspaceRoot || !isPathInsideWorkspace(resolved, this.workspaceRoot)) {
+              throw new Error('Access denied: path is outside the workspace')
+            }
+            return { content: await fsPromises.readFile(resolved, 'utf-8') }
+          },
+          writeFile: async (target: string, content: string) => {
+            const resolved = path.resolve(this.workspaceRoot || '', target)
+            if (!this.workspaceRoot || !isPathInsideWorkspace(resolved, this.workspaceRoot)) {
+              throw new Error('Access denied: path is outside the workspace')
+            }
+            await fsPromises.writeFile(resolved, content, 'utf-8')
+            return { success: true, target: resolved }
+          },
+          createFolder: async (target: string) => {
+            const resolved = path.resolve(this.workspaceRoot || '', target)
+            if (!this.workspaceRoot || !isPathInsideWorkspace(resolved, this.workspaceRoot)) {
+              throw new Error('Access denied: path is outside the workspace')
+            }
+            await fsPromises.mkdir(resolved, { recursive: true })
+            return { success: true, target: resolved }
+          },
+          delete: async (target: string) => {
+            const resolved = path.resolve(this.workspaceRoot || '', target)
+            if (!this.workspaceRoot || !isPathInsideWorkspace(resolved, this.workspaceRoot)) {
+              throw new Error('Access denied: path is outside the workspace')
+            }
+            await fsPromises.rm(resolved, { recursive: true, force: true })
+            return { success: true, target: resolved }
+          },
+          rename: async (oldPath: string, newPath: string) => {
+            const resolvedOld = path.resolve(this.workspaceRoot || '', oldPath)
+            const resolvedNew = path.resolve(this.workspaceRoot || '', newPath)
+            if (!this.workspaceRoot || !isPathInsideWorkspace(resolvedOld, this.workspaceRoot) || !isPathInsideWorkspace(resolvedNew, this.workspaceRoot)) {
+              throw new Error('Access denied: path is outside the workspace')
+            }
+            await fsPromises.rename(resolvedOld, resolvedNew)
+            return { success: true, oldPath: resolvedOld, newPath: resolvedNew }
+          },
         },
         window: {
           showNotification: (title: string, message: string, type: 'info' | 'warning' | 'error' = 'info') => {

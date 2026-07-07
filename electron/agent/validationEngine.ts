@@ -37,6 +37,15 @@ function parseErrors(output: string): string[] {
   return lines.filter((line) => /error|failed|cannot/i.test(line)).slice(-20)
 }
 
+let lastValidationResult: ValidationResult | null = null
+
+export function getLastValidationSummary(): string | null {
+  if (!lastValidationResult) return null
+  return lastValidationResult.success
+    ? 'TypeScript check passed successfully.'
+    : `TypeScript check failed with errors:\n${lastValidationResult.errors.join('\n')}`
+}
+
 export async function validateWorkspace(
   ctx: ToolContext,
   options: { runBuild?: boolean } = {},
@@ -67,11 +76,13 @@ export async function validateWorkspace(
     .filter(Boolean)
     .join('\n\n')
 
-  return {
+  const result = {
     success: tscResult.success && buildSuccess,
     tscSuccess: tscResult.success,
     buildSuccess,
     output,
     errors: [...tscErrors],
   }
+  lastValidationResult = result
+  return result
 }

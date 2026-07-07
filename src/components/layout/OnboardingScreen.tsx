@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Sparkles, Check, ArrowRight, ArrowLeft, FolderOpen,
@@ -61,7 +61,7 @@ export default function OnboardingScreen() {
   
   // AI states
   const [openrouterKeyDraft, setOpenrouterKeyDraft] = useState<string>('')
-  const [openrouterModelDraft, setOpenrouterModelDraft] = useState<string>('openai/gpt-4o')
+  const [openrouterModelDraft, setOpenrouterModelDraft] = useState<string>('deepseek/deepseek-chat:free')
 
   const [detecting, setDetecting] = useState(false)
   const [openCodeStatus, setOpenCodeStatus] = useState<{ installed: boolean; path: string | null; version: string | null } | null>(null)
@@ -130,22 +130,30 @@ export default function OnboardingScreen() {
       if ((window as any).loadDirectory) {
         await (window as any).loadDirectory(workspacePath)
       } else {
+        // Fallback: manually set workspace root in main process first so
+        // fs:readDir passes the workspace security check, then update store.
+        if (window.electronAPI?.app?.allowPath) {
+          window.electronAPI.app.allowPath(workspacePath)
+        }
+        await window.electronAPI?.workspace.setRoot(workspacePath)
+
         setRootPath(workspacePath)
         setCurrentFolder(workspacePath)
-        
+
         try {
           const response = await window.electronAPI?.fs.readDir(workspacePath)
           if (response && !(response as any).error) {
+            const sep = workspacePath.includes('\\') ? '\\' : '/'
             const entries = (response as any[]).map((entry) => ({
               name: entry.name,
-              path: `${workspacePath}${workspacePath.includes('\\') ? '\\' : '/'}${entry.name}`,
+              path: `${workspacePath}${workspacePath.endsWith(sep) ? '' : sep}${entry.name}`,
               isDirectory: entry.isDirectory,
               isFile: entry.isFile,
             }))
             setExplorerEntries(entries)
           }
         } catch {
-          // Fallback or ignore
+          // Ignore — workspace still opens, file tree may be empty
         }
       }
     }

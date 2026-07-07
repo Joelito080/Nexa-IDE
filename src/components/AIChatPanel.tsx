@@ -95,6 +95,32 @@ const AI_MODES: Array<{ id: AIMode; label: string; description: string }> = [
   { id: 'refactor', label: 'Refactor Mode', description: 'Transform the selected file only.' },
 ]
 
+function calculateAiActionCost(text: string, attachedFilesCount: number, promptLength: number): number {
+  const lower = text.toLowerCase()
+  let cost = 0
+  
+  const isAgent = lower.includes('/agent') || lower.includes('/build') || lower.includes('agent') || lower.includes('automate')
+  const isMultiFile = lower.includes('/refactor') || lower.includes('refactor') || lower.includes('multi-file') || attachedFilesCount > 1
+  const isFileEdit = lower.includes('/edit') || lower.includes('edit') || lower.includes('modify') || lower.includes('write') || lower.includes('fix') || attachedFilesCount === 1
+
+  if (isAgent) {
+    cost = 10
+  } else if (isMultiFile) {
+    cost = 5
+  } else if (isFileEdit) {
+    cost = 2
+  } else {
+    cost = 0 // chat
+  }
+
+  // large context penalty
+  if (promptLength > 25000 || attachedFilesCount >= 3) {
+    cost += 5
+  }
+
+  return cost
+}
+
 const AI_MODE_CONFIG: Record<AIMode, {
   includeSelectedFile: boolean
   includeWorkspaceContext: boolean
@@ -336,6 +362,24 @@ export default function AIChatPanel() {
   const { confirm, prompt } = useAppModal()
 
   const [inputValue, setInputValue] = useState('')
+  const [showDevPanel, setShowDevPanel] = useState(false)
+  const [devInspectorData, setDevInspectorData] = useState<any>(null)
+
+  useEffect(() => {
+    if (!showDevPanel) return
+    const fetchData = async () => {
+      try {
+        const data = await (window as any).electronAPI?.ai.getContextInspectorData({ model: aiModel })
+        if (data) setDevInspectorData(data)
+      } catch (err) {
+        console.warn('Failed to fetch context inspector data:', err)
+      }
+    }
+    fetchData()
+    const interval = setInterval(fetchData, 3000)
+    return () => clearInterval(interval)
+  }, [showDevPanel, aiModel])
+
   const [isThinking, setIsThinking] = useState(false)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [showDropdown, setShowDropdown] = useState(false)
@@ -821,21 +865,28 @@ export default function AIChatPanel() {
     setAutoScroll(true)
     setIsThinking(true)
 
-    // License check
-    const allowed = await window.electronAPI?.license.canUseAI()
-    if (!allowed && text.trim().toLowerCase() !== 'im the owner') {
-      addNotification('AI usage limit reached for Free tier. Upgrade to Pro to continue.', 'warning')
-      setMessages([
-        ...updatedMessages,
-        {
-          id: `ai-${Date.now()}`,
-          role: 'assistant' as const,
-          content: 'AI is unavailable on Free tier. Upgrade to Pro to continue.',
-          timestamp: new Date().toISOString()
+    // Display-only credit hint — enforcement is done in the main process at IPC layer.
+    const aiModel = useAppStore.getState().openrouterModel || useAppStore.getState().aiModel || ''
+    const isModelFree = aiModel.endsWith(':free')
+    if (!isModelFree) {
+      const estimatedCost = calculateAiActionCost(text, attachedFiles ? attachedFiles.length : 0, text.length)
+      if (estimatedCost > 0) {
+        const creditCheck = await window.electronAPI?.license.checkPremiumCredits(estimatedCost)
+        if (creditCheck && !creditCheck.allowed) {
+          addNotification(`Action requires ~${estimatedCost} credits (balance: ${creditCheck.balance}). Switch to a free model or buy credits.`, 'warning')
+          setMessages([
+            ...updatedMessages,
+            {
+              id: `ai-${Date.now()}`,
+              role: 'assistant' as const,
+              content: `💎 Action requires ~${estimatedCost} credits (your balance: ${creditCheck.balance}).\n\n**Free models are always unlimited** — switch to DeepSeek Free, Qwen Free, or any \`:free\` model.\n\nBuy credits at https://nexaide.com/pricing`,
+              timestamp: new Date().toISOString()
+            }
+          ])
+          setIsThinking(false)
+          return
         }
-      ])
-      setIsThinking(false)
-      return
+      }
     }
 
     const selectedFileContent = selectedFilePath ? getFileContent(selectedFilePath) : null
@@ -1134,6 +1185,40 @@ export default function AIChatPanel() {
       debugBuilder.setPrompt(fullPrompt, estimatedTokens)
     }
 
+    // Query active editor state
+    const activeFilePath = selectedFilePath
+    let activeFileContent = ''
+    let selectedCode = ''
+    let cursorLine: number | null = null
+    let cursorColumn: number | null = null
+    
+    try {
+      const monaco = (window as any).monaco
+      if (monaco && activeFilePath) {
+        const modelObj = monaco.editor.getModels()?.find((m: any) => {
+          const pathStr = m.uri.fsPath || m.uri.path || ''
+          return pathStr.replace(/\\/g, '/').toLowerCase() === activeFilePath.replace(/\\/g, '/').toLowerCase()
+        })
+        if (modelObj) {
+          activeFileContent = modelObj.getValue() || ''
+          const editor = monaco.editor.getEditors()?.find((e: any) => e.getModel() === modelObj)
+          if (editor) {
+            const selection = editor.getSelection()
+            if (selection) {
+              selectedCode = modelObj.getValueInRange(selection) || ''
+            }
+            const pos = editor.getPosition()
+            if (pos) {
+              cursorLine = pos.lineNumber
+              cursorColumn = pos.column
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[AI Payload] Monaco editor state query failed:', e)
+    }
+
     const payload: any = {
       prompt: fullPrompt,
       model: aiModel || 'llama3',
@@ -1142,11 +1227,11 @@ export default function AIChatPanel() {
       temperature,
       maxTokens,
       topP,
-    }
-
-    if (providerToUse === 'free-agent' && selectedFilePath && selectedFileContent) {
-      payload.filePath = selectedFilePath
-      payload.fileContent = selectedFileContent
+      activeFilePath,
+      activeFileContent: activeFileContent.slice(0, 10000),
+      selectedCode,
+      cursorLine,
+      cursorColumn,
     }
 
     try {
@@ -1356,24 +1441,88 @@ export default function AIChatPanel() {
     return Math.max(0, Math.round(chars / 4.1))
   }
 
+  const sanitizeAssistantResponse = (text: string): string => {
+    if (!text) return ''
+    
+    let sanitized = text
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+      .replace(/<tool_result>[\s\S]*?<\/tool_result>/gi, '')
+      .replace(/<tool_call>/gi, '')
+      .replace(/<\/tool_call>/gi, '')
+      .replace(/<tool_result>/gi, '')
+      .replace(/<\/tool_result>/gi, '')
+    
+    sanitized = sanitized.replace(/```tool\s*[\s\S]*?```/gi, '')
+    sanitized = sanitized.replace(/\[TOOL:\w+\s+[\s\S]*?\]/gi, '')
+
+    sanitized = sanitized.replace(/I'll check the workspace\.*/gi, '')
+    sanitized = sanitized.replace(/Reading workspace\.*/gi, '')
+    sanitized = sanitized.replace(/Reading file\.*/gi, '')
+    sanitized = sanitized.replace(/Running diagnostics\.*/gi, '')
+    sanitized = sanitized.replace(/Checking git status\.*/gi, '')
+    sanitized = sanitized.replace(/Checking git diff\.*/gi, '')
+
+    sanitized = sanitized.replace(/\n{3,}/g, '\n\n').trim()
+    
+    return sanitized
+  }
+
+  const detectFilePathForCodeBlock = (precedingText: string, lang: string, currentSelectedPath: string | null): string | null => {
+    const rootPath = useAppStore.getState().rootPath
+    if (!rootPath) return null
+
+    if (lang && lang.includes(':')) {
+      const parts = lang.split(':')
+      const pathPart = parts[1].trim()
+      if (pathPart) {
+        const separator = rootPath.includes('\\') ? '\\' : '/'
+        const cleanPath = pathPart.replace(/[/\\]/g, separator)
+        return cleanPath.startsWith(rootPath) ? cleanPath : `${rootPath}${rootPath.endsWith(separator) ? '' : separator}${cleanPath}`
+      }
+    }
+
+    const lastTextSegment = precedingText.slice(-300)
+    const pathRegex = /(?:^|\s|`|'|")([a-zA-Z0-9_\-\.\/\\\*]+\.[a-zA-Z0-9]{2,4})(?:`|'|"|\s|:|$)/g
+    const matches = Array.from(lastTextSegment.matchAll(pathRegex))
+    if (matches.length > 0) {
+      const detected = matches[matches.length - 1][1]
+      const lowerDet = detected.toLowerCase()
+      if (!lowerDet.endsWith('.png') && !lowerDet.endsWith('.jpg') && !lowerDet.endsWith('.gif') && !lowerDet.endsWith('.zip')) {
+        const separator = rootPath.includes('\\') ? '\\' : '/'
+        const cleanPath = detected.replace(/[/\\]/g, separator)
+        return cleanPath.startsWith(rootPath) ? cleanPath : `${rootPath}${rootPath.endsWith(separator) ? '' : separator}${cleanPath}`
+      }
+    }
+
+    return currentSelectedPath
+  }
+
   const renderMessageContent = (text: string) => {
-    const blocks: { type: 'code' | 'text'; lang?: string; content: string }[] = []
-    let remaining = text
+    const sanitizedText = sanitizeAssistantResponse(text)
+    const blocks: { type: 'code' | 'text'; lang?: string; content: string; precedingText: string }[] = []
+    let remaining = sanitizedText
+    let precedingAccumulator = ''
 
     while (remaining.length > 0) {
       const codeStart = remaining.indexOf('```')
       if (codeStart === -1) {
-        blocks.push({ type: 'text', content: remaining })
+        blocks.push({ type: 'text', content: remaining, precedingText: precedingAccumulator })
         break
       }
-      if (codeStart > 0) blocks.push({ type: 'text', content: remaining.slice(0, codeStart) })
+      const textSegment = remaining.slice(0, codeStart)
+      if (codeStart > 0) {
+        blocks.push({ type: 'text', content: textSegment, precedingText: precedingAccumulator })
+        precedingAccumulator += textSegment
+      }
       const afterOpen = remaining.slice(codeStart + 3)
       const firstLineEnd = afterOpen.indexOf('\n')
       const lang = firstLineEnd === -1 ? '' : afterOpen.slice(0, firstLineEnd).trim()
       const codeContentStart = firstLineEnd === -1 ? 0 : firstLineEnd + 1
       const closeIdx = afterOpen.indexOf('```')
       const codeContent = closeIdx === -1 ? afterOpen.slice(codeContentStart) : afterOpen.slice(codeContentStart, closeIdx)
-      blocks.push({ type: 'code', lang, content: codeContent.trimEnd() })
+      
+      blocks.push({ type: 'code', lang, content: codeContent.trimEnd(), precedingText: precedingAccumulator })
+      precedingAccumulator += codeContent
       remaining = closeIdx === -1 ? '' : afterOpen.slice(closeIdx + 3)
     }
 
@@ -1390,7 +1539,7 @@ export default function AIChatPanel() {
           key={i} 
           language={block.lang || 'typescript'} 
           code={block.content} 
-          filePath={selectedFilePath}
+          filePath={detectFilePathForCodeBlock(block.precedingText, block.lang || '', selectedFilePath)}
           onToolExecuted={handleToolExecution}
         />
       )
@@ -1433,6 +1582,93 @@ export default function AIChatPanel() {
     >
       {/* Background Grid Accent */}
       <GridPattern />
+
+      {showDevPanel && devInspectorData && (
+        <div className="absolute inset-x-0 top-[40px] bottom-0 z-30 bg-[#08090f]/95 backdrop-blur-md border-t border-white/[0.08] flex flex-col min-h-0 text-[10px] text-slate-300 font-mono p-4 overflow-y-auto select-text">
+          <div className="flex items-center justify-between border-b border-white/[0.08] pb-2 mb-3">
+            <div className="flex items-center gap-1.5 text-purple-400 font-bold text-xs">
+              <Terminal size={12} />
+              <span>CONTEXT INSPECTOR (Developer Mode)</span>
+            </div>
+            <button
+              onClick={() => setShowDevPanel(false)}
+              className="px-2 py-0.5 rounded bg-white/[0.04] hover:bg-white/[0.1] text-[9px] text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 mb-4">
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Project Name</span>
+              <span className="text-white text-xs">{devInspectorData.projectName}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Framework / Stack</span>
+              <span className="text-purple-300 text-xs">{devInspectorData.framework}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Package Manager</span>
+              <span className="text-white">{devInspectorData.packageManager}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Active AI Model</span>
+              <span className="text-cyan-300">{devInspectorData.activeModel}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Fallback Model</span>
+              <span className="text-amber-300">{devInspectorData.fallbackModel}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">CWD / Workspace Root</span>
+              <span className="text-slate-400 truncate block max-w-[170px]" title={devInspectorData.workspaceRoot}>{devInspectorData.workspaceRoot}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Estimated Token Count</span>
+              <span className="text-green-400 font-bold">{devInspectorData.tokenCount} tokens</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px]">Total Context Window Size</span>
+              <span className="text-cyan-400 font-bold">{devInspectorData.contextSize} tokens</span>
+            </div>
+          </div>
+
+          <div className="border-t border-white/[0.05] pt-3 mb-3">
+            <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px] mb-1">Active File (Editor)</span>
+            <span className="text-white bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.08]">{devInspectorData.activeFile}</span>
+          </div>
+
+          <div className="mb-3">
+            <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px] mb-1">Open Tabs / Files</span>
+            <div className="flex flex-wrap gap-1 mt-1">
+              {devInspectorData.openFiles.length > 0 ? (
+                devInspectorData.openFiles.map((f: string, i: number) => (
+                  <span key={i} className="text-slate-300 bg-slate-800/40 px-1.5 py-0.5 rounded border border-white/[0.04] text-[9px]">{f}</span>
+                ))
+              ) : (
+                <span className="text-slate-600 italic">No files open</span>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-white/[0.05] pt-3">
+            <span className="text-slate-500 block font-semibold uppercase tracking-wider text-[8px] mb-1.5">Retrieved Files For Context (Search-First Results)</span>
+            <div className="space-y-1">
+              {devInspectorData.retrievedFiles.length > 0 ? (
+                devInspectorData.retrievedFiles.map((f: string, i: number) => (
+                  <div key={i} className="flex items-center gap-1.5 text-green-300 bg-green-500/[0.03] border border-green-500/10 px-2 py-1 rounded">
+                    <span className="w-1 h-1 rounded-full bg-green-400" />
+                    <span className="flex-1 truncate">{f}</span>
+                    <span className="text-[8px] text-slate-500 font-normal">RETRIEVED</span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-slate-600 italic text-[9px]">No context search queries executed yet. Type a request to trigger search.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Glowing border edges */}
       <div className="absolute inset-0 pointer-events-none rounded-2xl border border-purple-500/10 shadow-[inset_0_0_20px_rgba(139,92,246,0.02)]" />
@@ -1480,6 +1716,13 @@ export default function AIChatPanel() {
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowDevPanel(!showDevPanel)}
+            title="Toggle Context Inspector (Developer Mode)"
+            className={`p-1 rounded-md transition-all cursor-pointer ${showDevPanel ? 'text-[#8b5cf6] bg-[#8b5cf6]/10' : 'text-[#6b7280] hover:text-[#cbd5e1] hover:bg-white/[0.04]'}`}
+          >
+            <Terminal size={11} />
+          </button>
           <button
             onClick={() => setMessages(PRELOAD_CONVERSATION)}
             title="Reset Conversation"

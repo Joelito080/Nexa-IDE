@@ -243,6 +243,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /** Whether an OpenRouter key is configured (never returns the key). */
     isKeyConfigured: () => ipcRenderer.invoke('ai:isKeyConfigured'),
+
+    /** Retrieve hidden developer context inspector details. */
+    getContextInspectorData: (payload?: unknown) => ipcRenderer.invoke('ai:contextInspectorData', payload),
   },
 
 
@@ -277,6 +280,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     recordAIRequest: () => ipcRenderer.invoke('license:recordAIRequest'),
     recordTemplateUsage: (templateId?: string) => ipcRenderer.invoke('license:recordTemplateUsage', templateId),
     recordExtensionInstall: (info?: any) => ipcRenderer.invoke('license:recordExtensionInstall', info),
+    getCreditBalance: () => ipcRenderer.invoke('license:getCreditBalance'),
+    checkPremiumCredits: (cost: number) => ipcRenderer.invoke('license:checkPremiumCredits', cost),
+    consumeCredits: (cost: number) => ipcRenderer.invoke('license:consumeCredits', cost),
+    reserveCredits: (reservationId: string, cost: number) => ipcRenderer.invoke('license:reserveCredits', reservationId, cost),
+    releaseReservedCredits: (reservationId: string) => ipcRenderer.invoke('license:releaseReservedCredits', reservationId),
   },
 
   feedback: {
@@ -430,6 +438,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     syncOpenFiles: (files: string[]) => ipcRenderer.invoke('workspace:syncOpenFiles', files),
     setRoot: (rootPath: string | null) => ipcRenderer.invoke('workspace:setRoot', rootPath),
     getRoot: () => ipcRenderer.invoke('workspace:getRoot'),
+    validate: (folderPath: string) => ipcRenderer.invoke('workspace:validate', folderPath),
+    notifyExplorerRendered: (rootPath: string) => ipcRenderer.send('workspace:explorer-rendered', rootPath),
   },
 
   agent: {

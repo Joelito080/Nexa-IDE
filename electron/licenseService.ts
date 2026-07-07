@@ -3,12 +3,18 @@ import crypto from 'node:crypto'
 import fsPromises from 'node:fs/promises'
 import path from 'node:path'
 
-export type LicensePlan = 'free' | 'pro' | 'ultimate'
+export type LicensePlan = 'free' | 'pro' | 'team' | 'ultimate'
 
 export interface LicenseUsage {
   aiRequests: number
   templateUses: number
   extensionInstalls: number
+}
+
+export interface CreditCheckResult {
+  allowed: boolean
+  balance: number
+  cost: number
 }
 
 export interface LicenseState {
@@ -20,6 +26,8 @@ export interface LicenseState {
   verifiedAt: string | null
   usageWindowStart: string
   usage: LicenseUsage
+  creditBalance: number
+  creditsPurchasedTotal: number
 }
 
 export interface LicenseStatus {
@@ -36,14 +44,25 @@ export interface LicenseStatus {
   usage: LicenseUsage
   usageWindowStart: string
   message: string | null
+  creditBalance: number
+  subscriptionTier: 'free' | 'pro' | 'team'
 }
 
 const STORAGE_FILE = 'license-state.bin'
 const REMOTE_URL = process.env.LICENSE_SERVER_URL
 const FREE_LIMITS = {
-  aiRequests: 25,
+  aiRequests: 999999,
   templateUses: 3,
   extensionInstalls: 5,
+}
+const STARTER_CREDITS = 50
+const PRO_MONTHLY_CREDITS = 500
+const TEAM_MONTHLY_CREDITS = 2000
+const CREDIT_COSTS = {
+  premiumRequest: 1,
+  longContext: 2,
+  multiFileEdit: 3,
+  agentMode: 5,
 }
 const PREMIUM_TEMPLATES = new Set(['nextjs', 'electron', 'saas-starter', 'ai-app-starter'])
 
@@ -86,6 +105,8 @@ function createDefaultState(): LicenseState {
       templateUses: 0,
       extensionInstalls: 0,
     },
+    creditBalance: STARTER_CREDITS,
+    creditsPurchasedTotal: 0,
   }
 }
 
@@ -117,6 +138,7 @@ async function saveState(state: LicenseState) {
 function normalizePlanFromKey(key: string): LicensePlan | null {
   const cleaned = key.trim().toUpperCase()
   if (cleaned.startsWith('PRO-')) return 'pro'
+  if (cleaned.startsWith('TEAM-')) return 'team'
   if (cleaned.startsWith('ULT-')) return 'ultimate'
   if (cleaned.startsWith('FREE-')) return 'free'
   return null
@@ -146,7 +168,7 @@ function ensureUsageWindow(state: LicenseState) {
 function buildStatus(state: LicenseState): LicenseStatus {
   const expired = isLicenseExpired(state)
   const plan = expired ? 'free' : state.plan
-  const canUseAI = plan !== 'free' || state.usage.aiRequests < FREE_LIMITS.aiRequests
+  const canUseAI = true
   const canCreateTemplate = plan !== 'free' || state.usage.templateUses < FREE_LIMITS.templateUses
   const canInstallExtensions = plan !== 'free' || state.usage.extensionInstalls < FREE_LIMITS.extensionInstalls
   return {
@@ -163,6 +185,8 @@ function buildStatus(state: LicenseState): LicenseStatus {
     usage: state.usage,
     usageWindowStart: state.usageWindowStart,
     message: expired ? 'License has expired and downgraded to Free.' : null,
+    creditBalance: state.creditBalance ?? 0,
+    subscriptionTier: plan === 'ultimate' || plan === 'team' ? 'team' : plan === 'pro' ? 'pro' : 'free',
   }
 }
 
@@ -287,8 +311,7 @@ export async function deactivateLicense() {
 }
 
 export async function canUseAI() {
-  const status = await getLicenseStatus()
-  return status.canUseAI && !status.isExpired
+  return true
 }
 
 export async function canCreateTemplate(templateId: string) {
@@ -303,7 +326,7 @@ export async function canInstallExtension(manifest: any) {
   const status = await getLicenseStatus()
   if (status.isExpired) return false
   const premium = manifest?.premium === true || manifest?.contributes?.premium === true
-  if (status.plan === 'ultimate') return true
+  if (status.plan === 'ultimate' || status.plan === 'team') return true
   if (status.plan === 'pro') return !premium
   return !premium && status.usage.extensionInstalls < FREE_LIMITS.extensionInstalls
 }
@@ -315,11 +338,81 @@ async function updateUsage(updater: (usage: LicenseUsage) => void) {
   return buildStatus(state)
 }
 
-export async function recordAIRequest() {
-  const status = await getLicenseStatus()
-  if (!status.canUseAI) {
-    return { error: 'AI usage limit reached or license inactive.' }
+export async function checkPremiumCredits(cost: number = 1): Promise<{ allowed: boolean; balance: number; cost: number }> {
+  const state = ensureUsageWindow(await loadState())
+  return {
+    allowed: state.creditBalance >= cost,
+    balance: state.creditBalance,
+    cost,
   }
+}
+
+export async function consumeCredits(cost: number = 1): Promise<{ success: boolean; balance: number }> {
+  const state = ensureUsageWindow(await loadState())
+  if (state.creditBalance < cost) {
+    return { success: false, balance: state.creditBalance }
+  }
+  state.creditBalance -= cost
+  await saveState(state)
+  return { success: true, balance: state.creditBalance }
+}
+
+// ─── Credit Reservation System ───────────────────────────────────────────────
+// Credits are reserved before a request begins and committed or released when
+// the request finishes. This prevents double-spend and cancel abuse.
+
+const pendingReservations = new Map<string, number>() // reservationId -> cost
+
+export async function reserveCredits(
+  reservationId: string,
+  cost: number
+): Promise<{ success: boolean; balance: number }> {
+  if (cost <= 0) return { success: true, balance: (await loadState()).creditBalance }
+  const state = ensureUsageWindow(await loadState())
+  if (state.creditBalance < cost) {
+    return { success: false, balance: state.creditBalance }
+  }
+  state.creditBalance -= cost
+  pendingReservations.set(reservationId, cost)
+  await saveState(state)
+  return { success: true, balance: state.creditBalance }
+}
+
+export async function commitReservedCredits(reservationId: string): Promise<void> {
+  // Credits were already deducted at reservation time — just clear the hold.
+  pendingReservations.delete(reservationId)
+}
+
+export async function releaseReservedCredits(
+  reservationId: string
+): Promise<{ balance: number }> {
+  const cost = pendingReservations.get(reservationId) ?? 0
+  pendingReservations.delete(reservationId)
+  if (cost <= 0) return { balance: (await loadState()).creditBalance }
+  const state = ensureUsageWindow(await loadState())
+  state.creditBalance = (state.creditBalance ?? 0) + cost
+  await saveState(state)
+  return { balance: state.creditBalance }
+}
+
+export async function getCreditBalance(): Promise<{ balance: number; tier: string }> {
+  const state = ensureUsageWindow(await loadState())
+  const plan = isLicenseExpired(state) ? 'free' : state.plan
+  return {
+    balance: state.creditBalance ?? 0,
+    tier: plan === 'ultimate' || plan === 'team' ? 'team' : plan === 'pro' ? 'pro' : 'free',
+  }
+}
+
+export async function addCredits(amount: number): Promise<{ balance: number }> {
+  const state = ensureUsageWindow(await loadState())
+  state.creditBalance = (state.creditBalance ?? 0) + amount
+  state.creditsPurchasedTotal = (state.creditsPurchasedTotal ?? 0) + amount
+  await saveState(state)
+  return { balance: state.creditBalance }
+}
+
+export async function recordAIRequest() {
   return updateUsage((usage) => { usage.aiRequests += 1 })
 }
 

@@ -1,4 +1,4 @@
-export type LicensePlan = 'free' | 'pro' | 'ultimate'
+export type LicensePlan = 'free' | 'pro' | 'team' | 'ultimate'
 
 export interface LicenseUsage {
   aiRequests: number
@@ -20,4 +20,6 @@ export interface LicenseStatus {
   usage: LicenseUsage
   usageWindowStart: string
   message: string | null
+  creditBalance: number
+  subscriptionTier: 'free' | 'pro' | 'team'
 }

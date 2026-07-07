@@ -147,6 +147,11 @@ interface ElectronLicenseAPI {
   refresh: () => Promise<LicenseStatus>
   deactivate: () => Promise<LicenseStatus>
   canUseAI: () => Promise<boolean>
+  getCreditBalance: () => Promise<{ balance: number; tier: string }>
+  checkPremiumCredits: (cost: number) => Promise<{ allowed: boolean; balance: number; cost: number }>
+  consumeCredits: (cost: number) => Promise<{ success: boolean; balance: number }>
+  reserveCredits: (reservationId: string, cost: number) => Promise<{ success: boolean; balance: number }>
+  releaseReservedCredits: (reservationId: string) => Promise<{ balance: number }>
   canCreateTemplate: (templateId: string) => Promise<boolean>
   canInstallExtension: (manifest: any) => Promise<boolean>
   recordAIRequest: () => Promise<LicenseStatus>
@@ -228,14 +233,16 @@ interface ElectronTerminalAPI {
 }
 
 interface ElectronWorkspaceAPI {
-  mount: (rootPath: string | null) => Promise<unknown>
-  snapshot: () => Promise<unknown>
-  listFiles: () => Promise<unknown>
-  loadTree: (dirPath?: string) => Promise<unknown>
-  setCwd: (cwd: string | null) => Promise<unknown>
-  syncOpenFiles: (files: string[]) => Promise<unknown>
-  setRoot: (rootPath: string | null) => Promise<unknown>
-  getRoot: () => Promise<unknown>
+  mount: (rootPath: string | null) => Promise<any>
+  snapshot: () => Promise<any>
+  listFiles: () => Promise<any>
+  loadTree: (dirPath?: string) => Promise<any>
+  setCwd: (cwd: string | null) => Promise<any>
+  syncOpenFiles: (files: string[]) => Promise<any>
+  setRoot: (rootPath: string | null) => Promise<any>
+  getRoot: () => Promise<any>
+  validate: (folderPath: string) => Promise<{ isValid: boolean; error?: string }>
+  notifyExplorerRendered: (rootPath: string) => void
 }
 
 interface ElectronAgentAPI {

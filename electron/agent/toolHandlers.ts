@@ -337,6 +337,58 @@ async function runTerminalTool(args: Record<string, string>, ctx: ToolContext): 
   const check = sanitizeCommand(command)
   if (!check.safe) return { success: false, output: '', error: check.reason }
 
+  // 1. Prevent unsafe npx package execution
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const parsedArgs = parseCommand(command)
+  if (parsedArgs && (parsedArgs[0] === 'npx' || (parsedArgs[0] === 'npm' && parsedArgs[1] === 'exec'))) {
+    const pkgName = parsedArgs[0] === 'npx' ? parsedArgs[1] : parsedArgs[3]
+    if (pkgName && pkgName !== '--') {
+      const allowedPrograms = new Set(['tsc', 'vite', 'next', 'eslint', 'jest', 'vitest', 'cargo', 'go', 'dotnet', 'npm', 'npx', 'node', 'pnpm', 'yarn', 'git', 'python', 'python3', 'pip', 'pip3'])
+      let isLocalDep = false
+      try {
+        const pkgJsonPath = path.join(ctx.workspaceRoot, 'package.json')
+        if (fs.existsSync(pkgJsonPath)) {
+          const raw = fs.readFileSync(pkgJsonPath, 'utf-8')
+          const parsedJson = JSON.parse(raw)
+          const deps = { ...(parsedJson.dependencies || {}), ...(parsedJson.devDependencies || {}) }
+          if (deps[pkgName] !== undefined) {
+            isLocalDep = true
+          }
+        }
+      } catch {}
+
+      if (!allowedPrograms.has(pkgName) && !isLocalDep) {
+        return {
+          success: false,
+          output: '',
+          error: `Command rejected: Unsafe npx execution of unvetted package '${pkgName}'. Ensure it is added to package.json dependencies first.`
+        }
+      }
+    }
+  }
+
+  // 2. Require user confirmation for risky commands
+  const isRisky = /git\s+(?:reset\s+--hard|clean)|rm\s+-rf|sudo\b|npm\s+(?:install|i|add|update)|yarn\s+(?:install|add)|pnpm\s+(?:install|add)|db\s+(?:push|drop|migrate)|migrate:reset/i.test(command)
+  if (isRisky) {
+    try {
+      const { dialog } = require('electron')
+      const resp = dialog.showMessageBoxSync({
+        type: 'warning',
+        title: 'Confirm Risky Command',
+        message: `The AI Agent is attempting to execute a potentially risky command:\n\n$ ${command}\n\nDo you want to allow this command to run?`,
+        buttons: ['Block Command', 'Allow Execution'],
+        defaultId: 0,
+        cancelId: 0
+      })
+      if (resp === 0) {
+        return { success: false, output: '', error: 'Command blocked: user rejected execution of risky command' }
+      }
+    } catch (dialogErr) {
+      log.warn('[Agent] Dialog confirmation not available, allowing command in non-interactive environment:', dialogErr)
+    }
+  }
+
   log.info(`[Agent] run_terminal: ${command} in ${ctx.cwd}`)
   ctx.onTerminalOutput?.(`$ ${command}`)
 

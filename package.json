@@ -7,7 +7,7 @@
   "author": "NEXA IDE",
   "license": "MIT",
   "scripts": {
-    "clean": "node -e \"const fs = require('fs'); const rm = (p) => fs.existsSync(p) && fs.rmSync(p, { recursive: true, force: true }); rm('dist'); rm('dist-electron');\"",
+    "clean": "node -e \"const fs = require('fs'); const rm = (p) => { try { if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true }); } catch (e) { console.warn('Warning: Could not remove ' + p + ':', e.message); } }; rm('dist'); rm('dist-electron');\"",
     "clean:release": "node -e \"const fs = require('fs'); const rm = (p) => fs.existsSync(p) && fs.rmSync(p, { recursive: true, force: true }); rm('release');\"",
     "dev": "vite --port 5174 --strictPort true",
     "build": "npm run clean && node ./node_modules/typescript/bin/tsc --noEmit && vite build && node scripts/build-electron.mjs",

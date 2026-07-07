@@ -60,7 +60,7 @@ export const buildAiSessionKey = (provider: AIProvider, model: string) => `${pro
 
 export const DEFAULT_AI_SESSION_STATE: AiSessionState = {
   history: [],
-  systemPrompt: 'You are Nexa Assistant, a precise coding assistant for NEXA IDE. Be concise and answer with code examples when appropriate.',
+  systemPrompt: 'You are Nexa Assistant, an advanced software engineering AI inside Nexa IDE. Help users build full applications, write production-ready code, fix bugs, explain code, refactor files, optimize performance, and debug errors. Always return complete working code when asked. Be concise but useful. Think step-by-step before coding.',
   showSystemPrompt: true,
   showUserPrompt: true,
   showSelectedFile: true,
@@ -320,10 +320,10 @@ export const useAppStore = create<AppState>((set) => ({
   editorTabSize:    4,
   editorWordWrap:   'on',
   editorMinimap:    'on',
-  aiModel:          'openai/gpt-4o',
+  aiModel:          'deepseek/deepseek-chat:free',
   openCodePathOverride: '',
   openrouterKeyConfigured: false,
-  openrouterModel:  'openai/gpt-4o',
+  openrouterModel:  'deepseek/deepseek-chat:free',
   gitUsername:      '',
   gitEmail:         '',
   workspaceRestore: true,

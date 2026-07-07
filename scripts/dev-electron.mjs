@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(__dirname, '..')
 const require = createRequire(import.meta.url)
 const electronBin = require('electron')
-const devUrls = ['http://127.0.0.1:5174/', 'http://localhost:5174/']
+const devUrls = ['http://localhost:5174/', 'http://127.0.0.1:5174/']
 const devUrl = devUrls[0]
 
 // Cursor/VS Code inject ELECTRON_RUN_AS_NODE=1; Electron must run in browser mode.
@@ -100,7 +100,7 @@ try {
     await waitForDevServer()
   }
 
-  electronProc = spawn(electronBin, ['.'], {
+  electronProc = spawn(electronBin, ['.', '--remote-debugging-port=9222'], {
     cwd: root,
     stdio: 'inherit',
     env: devEnv,

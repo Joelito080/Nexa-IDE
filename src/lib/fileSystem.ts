@@ -383,6 +383,14 @@ export async function openFile(filePath: string): Promise<string> {
           const res = await api.fs.readFile(targetPath)
           if (!res || !res.success) throw new Error(res?.error || 'Unknown file read error')
 
+          if (res.truncated) {
+            const baseName = targetPath.replace(/\\/g, '/').split('/').pop() || targetPath
+            useAppStore.getState().addNotification(
+              `File "${baseName}" is too large (> 1MB) and was partially loaded.`,
+              'warning'
+            )
+          }
+
           const content = res.content ?? ''
           setCacheContent(targetPath, content)
           return content

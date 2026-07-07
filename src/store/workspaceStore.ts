@@ -29,10 +29,13 @@ interface WorkspaceState {
   packageManager: 'npm' | 'pnpm' | 'yarn' | null
   summary: string
   loading: boolean
+  error: string | null
+  failedPath: string | null
 
   setSnapshot: (snapshot: WorkspaceSnapshot) => void
   setCwd: (cwd: string | null) => void
   setLoading: (loading: boolean) => void
+  setError: (error: string | null, failedPath?: string | null) => void
   reset: () => void
 }
 
@@ -45,6 +48,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   packageManager: null,
   summary: 'No workspace',
   loading: false,
+  error: null,
+  failedPath: null,
 
   setSnapshot: (snapshot) => set({
     projectRoot: snapshot.projectRoot,
@@ -55,9 +60,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     packageManager: snapshot.packageManager,
     summary: snapshot.summary,
     loading: false,
+    error: null,
   }),
   setCwd: (cwd) => set({ cwd }),
   setLoading: (loading) => set({ loading }),
+  setError: (error, failedPath = null) => set({ error, failedPath, loading: false }),
   reset: () => set({
     projectRoot: null,
     cwd: null,
@@ -67,5 +74,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     packageManager: null,
     summary: 'No workspace',
     loading: false,
+    error: null,
+    failedPath: null,
   }),
 }))

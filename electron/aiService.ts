@@ -1,7 +1,46 @@
 import { existsSync } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import log from 'electron-log'
+import { getWorkspaceContextForAI, workspaceEngine } from './workspaceEngine'
 import { isPathInsideWorkspace } from './safetyRules'
+
+interface AIRequestLog {
+  timestamp: number
+  success: boolean
+  durationMs: number
+  model: string
+}
+
+const aiRequestLogs: AIRequestLog[] = []
+
+export function recordAIRequestLog(success: boolean, durationMs: number, model: string) {
+  aiRequestLogs.push({ timestamp: Date.now(), success, durationMs, model })
+  if (aiRequestLogs.length > 50) aiRequestLogs.shift()
+}
+
+export function getAIHealthStatus() {
+  if (aiRequestLogs.length === 0) {
+    return { status: 'Optimal', errorRate: 0, latency: 'N/A' }
+  }
+  const recent = aiRequestLogs.slice(-20)
+  const errors = recent.filter(r => !r.success).length
+  const errorRate = Math.round((errors / recent.length) * 100)
+  const avgLatency = Math.round(recent.reduce((sum, r) => sum + r.durationMs, 0) / recent.length)
+  
+  let status = 'Optimal'
+  if (errorRate > 20 || avgLatency > 15000) {
+    status = 'Degraded'
+  } else if (errorRate > 50 || avgLatency > 30000) {
+    status = 'Critical'
+  }
+  
+  return {
+    status,
+    errorRate,
+    latency: `${avgLatency}ms`
+  }
+}
 
 // Safely resolve Electron app if running in Electron environment
 let app: any = null
@@ -33,6 +72,16 @@ export interface AIRequestOptions {
   temperature?: number
   maxTokens?: number
   topP?: number
+  activeFilePath?: string | null
+  activeFileContent?: string | null
+  selectedCode?: string | null
+  cursorLine?: number | null
+  cursorColumn?: number | null
+  licenseTier?: string
+  isSafeMode?: boolean
+  extensions?: string[]
+  terminalStatus?: string
+  recentDiagnostics?: string
 }
 
 export interface StreamCallbacks {
@@ -75,12 +124,207 @@ const CACHE_TTL = 1000 * 60 * 60 * 12
 
 export const DAILY_BUDGET_LIMIT = 5.00
 
-const FALLBACK_CHAIN = [
-  'anthropic/claude-3.5-sonnet',
-  'deepseek/deepseek-chat',
-  'qwen/qwen-2.5-72b-instruct',
-  'mistralai/mistral-large',
+export interface NexaModelEntry {
+  id: string
+  name: string
+  provider: string
+  tier: 'free' | 'premium'
+  category: 'coding' | 'general'
+}
+
+export const NEXA_BUILTIN_MODELS: NexaModelEntry[] = [
+  { id: 'deepseek/deepseek-chat:free', name: 'DeepSeek Free', provider: 'OpenRouter', tier: 'free', category: 'coding' },
+  { id: 'qwen/qwen-2.5-coder:free', name: 'Qwen Free', provider: 'OpenRouter', tier: 'free', category: 'coding' },
+  { id: 'mistralai/mistral-7b-instruct:free', name: 'Mistral Free', provider: 'OpenRouter', tier: 'free', category: 'general' },
+  { id: 'google/gemma-2-9b-it:free', name: 'Gemma Free', provider: 'OpenRouter', tier: 'free', category: 'general' },
+  { id: 'meta-llama/llama-3.1-8b-instruct:free', name: 'Llama Free', provider: 'OpenRouter', tier: 'free', category: 'coding' },
 ]
+
+export const FREE_MODEL_IDS = new Set(NEXA_BUILTIN_MODELS.filter(m => m.tier === 'free').map(m => m.id))
+
+export function isFreeTierModel(modelId: string): boolean {
+  return FREE_MODEL_IDS.has(modelId) || modelId.endsWith(':free')
+}
+
+export const NEXA_SYSTEM_PROMPT = `You are Nexa Assistant, the built-in AI software engineering assistant inside Nexa IDE.
+
+Your mission is to help users build, understand, maintain, debug, and improve software projects of any size.
+
+PRIMARY IDE RULES:
+1. SEARCH-FIRST POLICY: Before responding to any prompt, check and read the relevant project files provided in the WorkspaceContext and ProjectContext. Never answer blindly or make assumptions about the existing code.
+2. NO HALLUCINATIONS: Do not invent or assume the existence of files, folders, components, functions, or routes. If you need a file that isn't loaded, inspect the project structure or ask for it.
+3. CONTEXT INTEGRATION: Every request must be answered using the user's actual project context. The user should never have to manually explain what framework, language, or libraries they are using—you already know this from the WorkspaceContext.
+4. INTENT-AWARE FILE LOCATION: If a user requests a change (e.g., "Replace hero section" or "Fix the navbar"), automatically inspect the relevant files in the workspace (like Hero.tsx, Navbar.tsx, Landing.tsx, Home.tsx, App.tsx) without asking "What file is it in?" unless multiple candidates are equally valid.
+5. PROJECT DEFINITION: If the user asks what project they are working on, answer directly with the project name, framework, architecture, languages, dependencies, git branch, and package manager from the WorkspaceContext.
+6. AUTOMATIC SCAFFOLDING: If the workspace is empty and the user requests to build a project (e.g. "Build me a barber shop website"), automatically scaffold the project structure (React/Vite or Next.js, folders for components/pages/styles/assets, routing, package.json, and configurations) immediately using tool calls. Do not ask unnecessary configuration questions.
+7. HIDDEN TOOL CALLS: Write tool calls using markdown code blocks (e.g. \`\`\`tool ... \`\`\`). The user will not see these tool calls directly as they are executed and sanitized on the backend. Only return natural language responses alongside tools.
+
+PROJECT AWARENESS:
+- Understand the provided project context.
+- Respect the project's architecture.
+- Preserve existing coding style.
+- Follow framework conventions.
+- Reuse existing utilities, hooks, components, and services.
+- Avoid duplicate code.
+
+FILE RULES:
+- Never invent files that do not exist.
+- Only modify files explicitly provided or included in the IDE context.
+- If additional files are required, ask the user instead of guessing.
+- Never rewrite unrelated files.
+- Only change what is necessary.
+
+EDITING RULES:
+- Default to minimal edits and patches.
+- Prefer structured patches or diffs instead of rewriting entire files.
+- Preserve formatting and comments unless they become incorrect.
+- Never remove functionality unless requested.
+- When generating new files: Place them in logical locations, follow naming conventions, and use production-quality code.
+
+CODE QUALITY:
+- Always produce clean, maintainable, secure, scalable, performant, and readable code.
+- Avoid unnecessary complexity and duplicate logic.
+- Avoid breaking existing APIs.
+- Always validate imports.
+- Always use best practices for the detected language and framework.
+
+WHEN CONTEXT IS MISSING:
+- Never guess.
+- Ask concise questions when required information is unavailable.
+- If multiple approaches exist, briefly explain the tradeoffs before proceeding.
+
+OUTPUT RULES:
+- Keep responses concise.
+- For code changes: Explain what changed, explain why, show affected files, and return structured edits suitable for automatic application.
+- Only return complete file contents when explicitly requested; otherwise return minimal patches or diffs.
+- Never fabricate command output, compiler output, runtime logs, or test results.
+- Never claim to have built, tested, executed, or verified code unless those actions actually occurred.
+
+AVAILABLE IDE TOOLS:
+You may have access to:
+- Read File
+- Read Workspace
+- Search Workspace
+- Find References
+- Apply Patch
+- Create File
+- Rename File
+- Delete File
+- Open File
+- Run Terminal Command
+- Git Status
+- Git Diff
+- Diagnostics
+- AI Health
+- Extension Marketplace
+
+- Always use the most appropriate tool instead of guessing.
+- Never claim a tool succeeded unless it actually returned success.
+- If a required tool is unavailable, tell the user exactly what information or access is needed.
+
+DECISION ORDER:
+Before answering:
+1. Understand the user's goal.
+2. Gather relevant workspace context.
+3. Search for existing implementations before creating new code.
+4. Reuse existing architecture whenever possible.
+5. Produce the smallest correct change.
+6. Prefer patches over rewriting files.
+7. Never invent files or tool results.
+8. If required context is missing, ask for it.
+9. Only report actions that actually completed successfully.
+10. After generating changes, summarize what changed and why.
+
+BUILD BEHAVIOR:
+When a user asks to build an application, website, SaaS, API, game, or desktop app:
+1. Automatically inspect the current workspace silently.
+2. If the workspace is empty:
+   - Assume the user wants a new project.
+   - Generate a complete, production-quality project.
+   - Do not ask unnecessary clarifying questions unless the request is genuinely ambiguous.
+3. If a project already exists:
+   - Preserve the existing architecture and coding style.
+   - Build within the current project structure.
+   - Never overwrite unrelated files.
+4. Before writing files:
+   - Briefly explain the implementation plan in plain language.
+   - Then begin creating or editing files automatically without waiting for additional approval.
+
+STRICT TOOL CALL RULES — CRITICAL:
+- NEVER output the text "<tool_call>", "</tool_call>", "<tool_result>", or any XML/JSON tool tags.
+- NEVER write phrases like "Let me check the workspace <tool_call>Read Workspace</tool_call>".
+- Tools are INTERNAL ONLY. They run silently behind the scenes.
+- If you need to use a tool, use it silently. Do NOT narrate it, reference it, or show its syntax.
+- Your response to the user must ONLY contain plain text, markdown, and code blocks.
+- A response containing any tool tag is ALWAYS wrong. Never do it.
+- Do not mention tool names in angle brackets under any circumstances.
+
+FINAL GOAL:
+Act as a senior software engineer integrated into Nexa IDE. Help users build production-quality software while preserving their existing projects and minimizing unnecessary changes.`
+
+const FALLBACK_CHAIN = [
+  'deepseek/deepseek-chat:free',
+  'qwen/qwen-2.5-coder:free',
+  'mistralai/mistral-7b-instruct:free',
+  'google/gemma-2-9b-it:free',
+  'meta-llama/llama-3.1-8b-instruct:free',
+]
+
+// ─── Core Cost Engine ────────────────────────────────────────────────────────
+// NOTE: This is the authoritative cost calculation. UI components may mirror
+// this for display purposes but enforcement always happens here in the main
+// process — not in the renderer.
+
+export function calculateAiActionCost(
+  text: string,
+  attachedFilesCount: number,
+  promptLength: number
+): number {
+  const lower = text.toLowerCase()
+  let cost = 0
+
+  const isAgent =
+    lower.includes('/agent') || lower.includes('/build') ||
+    lower.includes('agent') || lower.includes('automate')
+  const isMultiFile =
+    lower.includes('/refactor') || lower.includes('refactor') ||
+    lower.includes('multi-file') || attachedFilesCount > 1
+  const isFileEdit =
+    lower.includes('/edit') || lower.includes('edit') ||
+    lower.includes('modify') || lower.includes('write') ||
+    lower.includes('fix') || attachedFilesCount === 1
+
+  if (isAgent) cost = 10
+  else if (isMultiFile) cost = 5
+  else if (isFileEdit) cost = 2
+  else cost = 0 // pure chat
+
+  if (promptLength > 25000 || attachedFilesCount >= 3) cost += 5
+
+  return cost
+}
+
+// ─── Session Failure Tracker ─────────────────────────────────────────────────
+// Tracks models that have failed in the current session so we never retry a
+// known-broken model within the same conversation.
+
+const sessionFailedModels = new Map<string, number>() // modelId -> failure count
+let currentSessionId = ''
+
+export function startNewAiSession(sessionId: string): void {
+  if (sessionId !== currentSessionId) {
+    currentSessionId = sessionId
+    sessionFailedModels.clear()
+  }
+}
+
+function markModelFailed(modelId: string): void {
+  sessionFailedModels.set(modelId, (sessionFailedModels.get(modelId) ?? 0) + 1)
+}
+
+function isModelBlacklisted(modelId: string): boolean {
+  return (sessionFailedModels.get(modelId) ?? 0) >= 2
+}
 
 // ─── Key Loader ─────────────────────────────────────────────────────────────
 
@@ -247,6 +491,15 @@ export async function fetchOpenRouterModels(forceRefresh = false): Promise<OpenR
       cacheTime = now
       await fs.writeFile(cachePath, JSON.stringify({ timestamp: now, models: modelsList }, null, 2), 'utf-8')
     }
+
+    // Ensure all built-in free models are present
+    const existingIds = new Set(cachedModels.map(m => m.id))
+    for (const builtIn of NEXA_BUILTIN_MODELS) {
+      if (!existingIds.has(builtIn.id)) {
+        cachedModels.push({ id: builtIn.id, name: builtIn.name, context_length: 32768, pricing: { prompt: '0', completion: '0' }, description: '', architecture: undefined })
+      }
+    }
+
     return cachedModels
   } catch {
     if (cachedModels.length > 0) return cachedModels
@@ -289,7 +542,67 @@ export async function checkOpenRouterConnection(): Promise<{
   }
 }
 
+let lastRetrievedFiles: string[] = []
+
+export function getLastRetrievedFiles(): string[] {
+  return lastRetrievedFiles
+}
+
+export async function getProjectContextForAI(root: string, prompt: string): Promise<string> {
+  try {
+    const { buildDependencyGraph, findRelevantFiles } = await import('./agent/projectGraphAnalyzer')
+    const graph = await buildDependencyGraph(root)
+    const snapshot = await workspaceEngine.getSnapshot()
+    const relevantFiles = findRelevantFiles(prompt, graph, snapshot)
+
+    const fileContents: string[] = []
+    const retrievedFiles: string[] = []
+    
+    for (const file of relevantFiles.slice(0, 4)) {
+      try {
+        const content = await fs.readFile(file, 'utf-8')
+        const relPath = path.relative(root, file).replace(/\\/g, '/')
+        if (content.length < 100000) {
+          retrievedFiles.push(relPath)
+          fileContents.push(`
+=== Relevant File: ${relPath} ===
+\`\`\`
+${content.slice(0, 6000)}
+\`\`\`
+`)
+        }
+      } catch {}
+    }
+
+    const relationships = relevantFiles.slice(0, 4).map(file => {
+      const node = graph.nodes[file]
+      if (!node) return ''
+      const rel = path.relative(root, file).replace(/\\/g, '/')
+      const deps = node.dependencies.map(d => path.relative(root, d).replace(/\\/g, '/')).join(', ')
+      const imported = node.importedBy.map(d => path.relative(root, d).replace(/\\/g, '/')).join(', ')
+      return `- ${rel} depends on: [${deps || 'none'}] and is imported by: [${imported || 'none'}]`
+    }).filter(Boolean).join('\n')
+
+    lastRetrievedFiles = retrievedFiles
+
+    return `
+=== PROJECT CONTEXT (ProjectContext - Hidden) ===
+[Relationships]
+${relationships || 'No dependencies detected.'}
+
+[File Codes]
+${fileContents.join('\n') || 'No relevant code files loaded.'}
+=================================================
+`
+  } catch (err) {
+    log.error('[AI Service] Failed to build ProjectContext:', err)
+    return ''
+  }
+}
+
 // ─── OpenRouter Streaming ────────────────────────────────────────────────────
+// Rate limiting is enforced in main.ts IPC handler (ai:stream:start).
+// This service layer is the final execution layer.
 
 export async function askAIStream(
   prompt: string,
@@ -297,6 +610,7 @@ export async function askAIStream(
   callbacks: StreamCallbacks,
   streamId?: string,
 ): Promise<void> {
+
   const start = performance.now()
   let hasSentToken = false
 
@@ -311,6 +625,36 @@ export async function askAIStream(
       return
     }
     userSignal.addEventListener('abort', () => ctrl.abort(), { once: true })
+  }
+
+  // STEP 1 & 5: Fetch and inject WorkspaceContext & ProjectContext
+  try {
+    const aiHealth = getAIHealthStatus()
+    const workspaceContext = await getWorkspaceContextForAI(options.projectPath || null, {
+      model: options.model,
+      activeFilePath: options.activeFilePath,
+      activeFileContent: options.activeFileContent,
+      selectedCode: options.selectedCode,
+      cursorLine: options.cursorLine,
+      cursorColumn: options.cursorColumn,
+      licenseTier: options.licenseTier,
+      isSafeMode: options.isSafeMode,
+      extensions: options.extensions,
+      terminalStatus: options.terminalStatus,
+      recentDiagnostics: options.recentDiagnostics,
+      aiHealth,
+    })
+    
+    let projectContext = ''
+    const root = options.projectPath || workspaceEngine.getRoot()
+    if (root) {
+      projectContext = await getProjectContextForAI(root, prompt)
+    }
+
+    const originalSysPrompt = options.systemPrompt || NEXA_SYSTEM_PROMPT
+    options.systemPrompt = `${originalSysPrompt}\n\n${workspaceContext}\n\n${projectContext}`
+  } catch (err) {
+    log.error('[AI Service] Failed to inject context:', err)
   }
 
   const wrappedCallbacks: StreamCallbacks = {
@@ -330,13 +674,21 @@ export async function askAIStream(
       import('./telemetry').then(({ telemetry }) => {
         telemetry.trackEvent('ai-latency', { type: 'streaming-total', durationMs: totalDuration })
       }).catch(() => {})
+      recordAIRequestLog(true, totalDuration, options.model || 'default')
       callbacks.onDone(fullText, metrics)
     }
   }
 
   try {
-    await runFreeAiFallbackStream(prompt, options, wrappedCallbacks, ctrl.signal)
+    if (isOpenRouterKeyConfigured()) {
+      const model = options.model || FALLBACK_CHAIN[0] || 'deepseek/deepseek-chat:free'
+      const tried = new Set<string>([model])
+      await runStreamWithFallback(prompt, model, options, wrappedCallbacks, ctrl.signal, 0, tried)
+    } else {
+      await runFreeAiFallbackStream(prompt, options, wrappedCallbacks, ctrl.signal)
+    }
   } catch (err) {
+    recordAIRequestLog(false, Math.round(performance.now() - start), options.model || 'default')
     wrappedCallbacks.onError(sanitizeErrorMessage((err as Error).message))
   } finally {
     if (streamId) activeStreams.delete(streamId)
@@ -366,39 +718,65 @@ async function runStreamWithFallback(
 
   try {
     const messages: AIMessage[] = []
-    if (options.systemPrompt) {
-      messages.push({ role: 'system', content: options.systemPrompt })
+    let systemPromptToUse = options.systemPrompt || NEXA_SYSTEM_PROMPT
+    if (isFreeTierModel(modelName)) {
+      if (options.systemPrompt && options.systemPrompt.includes('=== WORKSPACE CONTEXT')) {
+        systemPromptToUse = options.systemPrompt
+      } else {
+        systemPromptToUse = `${NEXA_SYSTEM_PROMPT}\n\n${options.systemPrompt || ''}`
+      }
+    }
+    if (systemPromptToUse) {
+      messages.push({ role: 'system', content: systemPromptToUse })
     }
     messages.push({ role: 'user', content: prompt })
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://nexuside.app',
-        'X-Title': 'NEXA IDE',
-      },
-      body: JSON.stringify({
-        model: modelName,
-        messages,
-        stream: true,
-        stream_options: { include_usage: true },
-        temperature: options.temperature ?? 0.5,
-        max_tokens: options.maxTokens ?? 4096,
-        top_p: options.topP ?? 0.9,
-      }),
-      signal: combinedSignal,
-    })
+    let res: Response | null = null
+    let attempts = 0
+    while (true) {
+      try {
+        res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://nexuside.app',
+            'X-Title': 'NEXA IDE',
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages,
+            stream: true,
+            stream_options: { include_usage: true },
+            temperature: options.temperature ?? 0.5,
+            max_tokens: options.maxTokens ?? 4096,
+            top_p: options.topP ?? 0.9,
+          }),
+          signal: combinedSignal,
+        })
+
+        if (res.status === 429) {
+          throw new Error('Rate limit exceeded (429)')
+        }
+
+        if (!res.ok) {
+          const errorText = sanitizeErrorMessage(await res.text())
+          throw new Error(`Status ${res.status}: ${errorText}`)
+        }
+        break
+      } catch (error) {
+        attempts++
+        if (attempts >= 3 || signal.aborted || timeoutCtrl.signal.aborted) {
+          throw error
+        }
+        const backoff = Math.pow(2, attempts) * 1000
+        await new Promise((r) => setTimeout(r, backoff))
+      }
+    }
 
     clearTimeout(timer)
 
-    if (!res.ok) {
-      const errorText = sanitizeErrorMessage(await res.text())
-      throw new Error(`Status ${res.status}: ${errorText}`)
-    }
-
-    if (!res.body) {
+    if (!res || !res.body) {
       throw new Error('OpenRouter returned no response body.')
     }
 
@@ -448,8 +826,22 @@ async function runStreamWithFallback(
     const outputTokens = openrouterUsage?.completion_tokens ?? Math.ceil(fullText.length / 4)
     const estimatedCost = estimateCost(inputTokens, outputTokens, promptPrice, completionPrice)
     const speed = duration > 0 ? Math.round(outputTokens / duration) : 0
-    const dailySpend = await updateSpend(estimatedCost)
+    const dailySpend = isFreeTierModel(modelName) ? (await getBudgetStatus()).dailySpend : await updateSpend(estimatedCost)
 
+    // ─── Usage Telemetry ───────────────────────────────────────────────────
+    import('./telemetry').then(({ telemetry }) => {
+      telemetry.trackEvent('ai-latency', {
+        type: 'ai-usage',
+        model: modelName,
+        tier: isFreeTierModel(modelName) ? 'free' : 'premium',
+        inputTokens,
+        outputTokens,
+        cost: estimatedCost,
+        speed,
+      })
+    }).catch(() => {})
+
+    recordAIRequestLog(true, Date.now() - startTime, modelName)
     callbacks.onDone(fullText, {
       inputTokens,
       outputTokens,
@@ -466,10 +858,17 @@ async function runStreamWithFallback(
       return
     }
 
-    const nextModel = FALLBACK_CHAIN[fallbackIndex]
-    if (nextModel && !triedModels.has(nextModel) && fallbackIndex < FALLBACK_CHAIN.length) {
+    markModelFailed(modelName)
+
+    const nextModel = FALLBACK_CHAIN.find(
+      (m) => !triedModels.has(m) && !isModelBlacklisted(m)
+    )
+    if (nextModel && fallbackIndex < 3) {
       triedModels.add(nextModel)
-      callbacks.onChunk(`\n\n*[Connection failed. Falling back to ${nextModel}...]*\n\n`)
+      callbacks.onChunk(`\n\n*[Switching to backup model for stability...]*\n\n`)
+      const cooldown = 2000 + Math.random() * 3000
+      await new Promise((r) => setTimeout(r, cooldown))
+      callbacks.onChunk(`*[Optimizing response quality...]*\n\n`)
       await runStreamWithFallback(prompt, nextModel, options, callbacks, signal, fallbackIndex + 1, triedModels)
       return
     }
@@ -479,6 +878,7 @@ async function runStreamWithFallback(
       return
     }
 
+    recordAIRequestLog(false, Date.now() - startTime, modelName)
     callbacks.onError(sanitizeErrorMessage(`OpenRouter error: ${err.message}`))
   }
 }
@@ -757,12 +1157,33 @@ function isOpenRouterFallbackError(err: unknown): boolean {
 
 export async function askAI(prompt: string, options: AIRequestOptions = {}) {
   const start = performance.now()
-  let resp: string
-  if (!isOpenRouterKeyConfigured()) {
-    resp = await generateFreeAiResponse(prompt, options)
-  } else {
-    resp = await generateFreeAiResponse(prompt, options)
+  let resp = ''
+
+  if (isOpenRouterKeyConfigured()) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        askAIStream(
+          prompt,
+          options,
+          {
+            onChunk: (chunk) => { resp += chunk },
+            onDone: (full) => { resp = full; resolve() },
+            onError: (err) => { reject(new Error(err)) }
+          }
+        ).catch(reject)
+      })
+      const durationMs = Math.round(performance.now() - start)
+      try {
+        const { telemetry } = await import('./telemetry')
+        await telemetry.trackEvent('ai-latency', { type: 'non-streaming', durationMs })
+      } catch {}
+      return { success: true, response: resp }
+    } catch (err) {
+      console.error('Non-streaming OpenRouter request failed, falling back to free:', err)
+    }
   }
+
+  resp = await generateFreeAiResponse(prompt, options)
   const durationMs = Math.round(performance.now() - start)
   try {
     const { telemetry } = await import('./telemetry')

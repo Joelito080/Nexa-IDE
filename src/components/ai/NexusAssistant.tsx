@@ -293,24 +293,88 @@ function parseTextWithMarkdown(text: string): React.ReactNode {
   )
 }
 
+function sanitizeAssistantResponse(text: string): string {
+  if (!text) return ''
+  
+  let sanitized = text
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    .replace(/<tool_result>[\s\S]*?<\/tool_result>/gi, '')
+    .replace(/<tool_call>/gi, '')
+    .replace(/<\/tool_call>/gi, '')
+    .replace(/<tool_result>/gi, '')
+    .replace(/<\/tool_result>/gi, '')
+  
+  sanitized = sanitized.replace(/```tool\s*[\s\S]*?```/gi, '')
+  sanitized = sanitized.replace(/\[TOOL:\w+\s+[\s\S]*?\]/gi, '')
+
+  sanitized = sanitized.replace(/I'll check the workspace\.*/gi, '')
+  sanitized = sanitized.replace(/Reading workspace\.*/gi, '')
+  sanitized = sanitized.replace(/Reading file\.*/gi, '')
+  sanitized = sanitized.replace(/Running diagnostics\.*/gi, '')
+  sanitized = sanitized.replace(/Checking git status\.*/gi, '')
+  sanitized = sanitized.replace(/Checking git diff\.*/gi, '')
+
+  sanitized = sanitized.replace(/\n{3,}/g, '\n\n').trim()
+  
+  return sanitized
+}
+
+function detectFilePathForCodeBlock(precedingText: string, lang: string, currentSelectedPath: string | null): string | null {
+  const rootPath = useAppStore.getState().rootPath
+  if (!rootPath) return null
+
+  if (lang && lang.includes(':')) {
+    const parts = lang.split(':')
+    const pathPart = parts[1].trim()
+    if (pathPart) {
+      const separator = rootPath.includes('\\') ? '\\' : '/'
+      const cleanPath = pathPart.replace(/[/\\]/g, separator)
+      return cleanPath.startsWith(rootPath) ? cleanPath : `${rootPath}${rootPath.endsWith(separator) ? '' : separator}${cleanPath}`
+    }
+  }
+
+  const lastTextSegment = precedingText.slice(-300)
+  const pathRegex = /(?:^|\s|`|'|")([a-zA-Z0-9_\-\.\/\\\*]+\.[a-zA-Z0-9]{2,4})(?:`|'|"|\s|:|$)/g
+  const matches = Array.from(lastTextSegment.matchAll(pathRegex))
+  if (matches.length > 0) {
+    const detected = matches[matches.length - 1][1]
+    const lowerDet = detected.toLowerCase()
+    if (!lowerDet.endsWith('.png') && !lowerDet.endsWith('.jpg') && !lowerDet.endsWith('.gif') && !lowerDet.endsWith('.zip')) {
+      const separator = rootPath.includes('\\') ? '\\' : '/'
+      const cleanPath = detected.replace(/[/\\]/g, separator)
+      return cleanPath.startsWith(rootPath) ? cleanPath : `${rootPath}${rootPath.endsWith(separator) ? '' : separator}${cleanPath}`
+    }
+  }
+
+  return currentSelectedPath
+}
+
 function renderContent(text: string, filePath: string | null): React.ReactNode {
-  const blocks: { type: 'text' | 'code'; lang?: string; content: string }[] = []
-  let remaining = text
+  const sanitizedText = sanitizeAssistantResponse(text)
+  const blocks: { type: 'text' | 'code'; lang?: string; content: string; precedingText: string }[] = []
+  let remaining = sanitizedText
+  let precedingAccumulator = ''
 
   while (remaining.length > 0) {
     const codeStart = remaining.indexOf('```')
     if (codeStart === -1) {
-      blocks.push({ type: 'text', content: remaining })
+      blocks.push({ type: 'text', content: remaining, precedingText: precedingAccumulator })
       break
     }
-    if (codeStart > 0) blocks.push({ type: 'text', content: remaining.slice(0, codeStart) })
+    const textSegment = remaining.slice(0, codeStart)
+    if (codeStart > 0) {
+      blocks.push({ type: 'text', content: textSegment, precedingText: precedingAccumulator })
+      precedingAccumulator += textSegment
+    }
     const afterOpen = remaining.slice(codeStart + 3)
     const firstNL = afterOpen.indexOf('\n')
     const lang = firstNL === -1 ? '' : afterOpen.slice(0, firstNL).trim()
     const codeStart2 = firstNL === -1 ? 0 : firstNL + 1
     const closeIdx = afterOpen.indexOf('```', codeStart2)
     const code = closeIdx === -1 ? afterOpen.slice(codeStart2) : afterOpen.slice(codeStart2, closeIdx)
-    blocks.push({ type: 'code', lang, content: code.trimEnd() })
+    
+    blocks.push({ type: 'code', lang, content: code.trimEnd(), precedingText: precedingAccumulator })
+    precedingAccumulator += code
     remaining = closeIdx === -1 ? '' : afterOpen.slice(closeIdx + 3)
   }
 
@@ -318,7 +382,12 @@ function renderContent(text: string, filePath: string | null): React.ReactNode {
     <>
       {blocks.map((b, i) =>
         b.type === 'code' ? (
-          <CodeBlock key={i} language={b.lang ?? ''} code={b.content} filePath={filePath} />
+          <CodeBlock 
+            key={i} 
+            language={b.lang ?? ''} 
+            code={b.content} 
+            filePath={detectFilePathForCodeBlock(b.precedingText, b.lang ?? '', filePath)} 
+          />
         ) : (
           <div key={i} className="my-1.5 first:mt-0 last:mb-0">
             {parseTextWithMarkdown(b.content)}
@@ -371,10 +440,36 @@ const ActionBar = memo(function ActionBar({ onAction, hasFile, disabled }: Actio
   )
 })
 
-// â”€â”€â”€ Main Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Main Component ─────────────────────────────────────────────────────────
+
+function calculateAiActionCost(text: string, attachedFilesCount: number, promptLength: number): number {
+  const lower = text.toLowerCase()
+  let cost = 0
+  
+  const isAgent = lower.includes('/agent') || lower.includes('/build') || lower.includes('agent') || lower.includes('automate')
+  const isMultiFile = lower.includes('/refactor') || lower.includes('refactor') || lower.includes('multi-file') || attachedFilesCount > 1
+  const isFileEdit = lower.includes('/edit') || lower.includes('edit') || lower.includes('modify') || lower.includes('write') || lower.includes('fix') || attachedFilesCount === 1
+
+  if (isAgent) {
+    cost = 10
+  } else if (isMultiFile) {
+    cost = 5
+  } else if (isFileEdit) {
+    cost = 2
+  } else {
+    cost = 0 // chat
+  }
+
+  // large context penalty
+  if (promptLength > 25000 || attachedFilesCount >= 3) {
+    cost += 5
+  }
+
+  return cost
+}
 
 export default function NexusAssistant() {
-  // â”€â”€ Store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Store ──────────────────────────────────────────────────────────────────────────────────────
   const messages = useAppStore((s) => s.aiChatHistory) as ChatMessage[]
   const setMessages = useAppStore((s) => s.setAiChatHistory)
   const selectedFilePath = useAppStore((s) => s.selectedFilePath)
@@ -409,7 +504,7 @@ export default function NexusAssistant() {
     try {
       return JSON.parse(localStorage.getItem('nexus-fav-models') || '[]')
     } catch {
-      return ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet', 'deepseek/deepseek-chat']
+      return ['deepseek/deepseek-chat:free', 'qwen/qwen-2.5-coder:free', 'mistralai/mistral-7b-instruct:free', 'google/gemma-2-9b-it:free', 'meta-llama/llama-3.1-8b-instruct:free']
     }
   })
   const [recents, setRecents] = useState<string[]>(() => {
@@ -424,6 +519,7 @@ export default function NexusAssistant() {
   const [dailySpend, setDailySpend] = useState(0)
   const [dailyBudgetLimit, setDailyBudgetLimit] = useState(5)
   const sessionSpendRef = useRef(0)
+  const lastSendTimeRef = useRef(0)
 
   // Advanced settings
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -709,6 +805,11 @@ export default function NexusAssistant() {
     return !favorites.includes(m.id) && !recents.includes(m.id)
   })
 
+  const FREE_MODEL_SUFFIXES = [':free']
+  const isFreeModel = (id: string) => FREE_MODEL_SUFFIXES.some(s => id.endsWith(s))
+  const freeModels = listedModels.filter(m => isFreeModel(m.id))
+  const premiumModels = listedModels.filter(m => !isFreeModel(m.id))
+
   const buildPrompt = useCallback((userText: string) => {
     const modelInfo = dedupedModels.find((m) => m.id === openrouterModel)
     const contextLimit = modelInfo?.context_length ?? 128000
@@ -943,6 +1044,13 @@ export default function NexusAssistant() {
 
   const sendQuery = useCallback(async (text: string) => {
     if (!text || isStreaming) return
+    const now = Date.now()
+    if (now - lastSendTimeRef.current < 1000) {
+      addNotification('Please wait a second before sending another request.', 'warning')
+      return
+    }
+    lastSendTimeRef.current = now
+
     setInput('')
     setShowSlash(false)
 
@@ -991,16 +1099,25 @@ export default function NexusAssistant() {
       }
     }
 
-    // License check
-    const allowed = await window.electronAPI?.license.canUseAI()
-    if (!allowed && text.toLowerCase() !== 'im the owner') {
-      addNotification('AI usage limit reached. Upgrade to Pro.', 'warning')
-      setMessages([...updatedMsgs, {
-        id: newId(), role: 'assistant',
-        content: 'âš ï¸ AI usage limit reached for Free tier. Upgrade to Pro to continue.',
-        timestamp: new Date().toISOString(), error: true,
-      }])
-      return
+    // Display-only credit hint — enforcement is done in the main process at IPC layer.
+    // The renderer shows an estimated cost so the user can make an informed decision
+    // before the request is sent. The authoritative check + reservation happens in main.ts.
+    const isCurrentFree = openrouterModel.endsWith(':free')
+    if (!isCurrentFree) {
+      const estimatedCost = calculateAiActionCost(text, attachedFiles.length, buildPrompt(text).length)
+      if (estimatedCost > 0) {
+        const creditCheck = await window.electronAPI?.license.checkPremiumCredits(estimatedCost)
+        if (creditCheck && !creditCheck.allowed) {
+          addNotification(`Action requires ~${estimatedCost} credits (balance: ${creditCheck.balance}). Switch to a free model or buy credits.`, 'warning')
+          setMessages([...updatedMsgs, {
+            id: newId(), role: 'assistant',
+            content: `💎 Action requires ~${estimatedCost} credits (your balance: ${creditCheck.balance}).\n\n**Free models are always unlimited** — switch to DeepSeek Free, Qwen Free, or any \`:free\` model.\n\n[Buy credits → https://nexaide.com/pricing](https://nexaide.com/pricing)`,
+            timestamp: new Date().toISOString(), error: true,
+          }])
+          setIsStreaming(false)
+          return
+        }
+      }
     }
 
     // Create streaming placeholder
@@ -1021,23 +1138,72 @@ export default function NexusAssistant() {
     // Add to recents
     addRecent(openrouterModel)
 
+    const builtPrompt = buildPrompt(text)
+    
+    // Query active editor state
+    const activeFilePath = selectedFilePath
+    let activeFileContent = ''
+    let selectedCode = ''
+    let cursorLine: number | null = null
+    let cursorColumn: number | null = null
+    
+    try {
+      const monaco = (window as any).monaco
+      if (monaco && activeFilePath) {
+        const modelObj = monaco.editor.getModels()?.find((m: any) => {
+          const pathStr = m.uri.fsPath || m.uri.path || ''
+          return pathStr.replace(/\\/g, '/').toLowerCase() === activeFilePath.replace(/\\/g, '/').toLowerCase()
+        })
+        if (modelObj) {
+          activeFileContent = modelObj.getValue() || ''
+          const editor = monaco.editor.getEditors()?.find((e: any) => e.getModel() === modelObj)
+          if (editor) {
+            const selection = editor.getSelection()
+            if (selection) {
+              selectedCode = modelObj.getValueInRange(selection) || ''
+            }
+            const pos = editor.getPosition()
+            if (pos) {
+              cursorLine = pos.lineNumber
+              cursorColumn = pos.column
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[AI Payload] Monaco editor state query failed:', e)
+    }
+
     const payload = {
       streamId,
-      prompt: buildPrompt(text),
+      prompt: builtPrompt,
       systemPrompt: showSystemPrompt ? systemPrompt : '',
       model: openrouterModel,
       projectPath: rootPath,
       temperature,
       maxTokens,
-      topP
+      topP,
+      attachedFilesCount: attachedFiles.length,
+      sessionId: aiSessionKey,
+      activeFilePath,
+      activeFileContent: activeFileContent.slice(0, 10000), // truncate if extremely large
+      selectedCode,
+      cursorLine,
+      cursorColumn,
     }
 
     try {
       const res = await window.electronAPI?.ai.streamStart(payload)
       if (res && 'error' in res) {
+        const errRes = res as any
+        const msg = errRes.insufficientCredits
+          ? `💎 Insufficient credits. Action requires **${errRes.required} credits** (balance: ${errRes.balance}).\n\n**Free models are always unlimited.**\n\n[Buy credits → https://nexaide.com/pricing](https://nexaide.com/pricing)`
+          : errRes.rateLimited
+          ? `⏳ Rate limit reached. Please wait a moment before sending another request.`
+          : `❌ ${errRes.error}`
         setMessages([...updatedMsgs, {
           id: streamId, role: 'assistant',
-          content: `âŒ ${(res as any).error}`,
+          content: msg,
           timestamp: new Date().toISOString(), error: true,
         }])
         setIsStreaming(false)
@@ -1143,7 +1309,8 @@ export default function NexusAssistant() {
 
   const selectedModelInfo = dedupedModels.find(m => m.id === openrouterModel)
   const currentModelLabel = selectedModelInfo?.name || openrouterModel
-  const budgetWarning = dailySpend >= dailyBudgetLimit * 0.8
+  const isCurrentModelFree = openrouterModel.endsWith(':free')
+  const budgetWarning = !isCurrentModelFree && dailySpend >= dailyBudgetLimit * 0.8
 
   return (
     <div
@@ -1269,37 +1436,33 @@ export default function NexusAssistant() {
                       )
                     })}
 
-                    {/* All models */}
-                    <div className="px-2.5 py-1 mt-1 text-[8px] text-slate-500 font-bold tracking-wider uppercase border-b border-white/[0.04]">
-                      Models ({listedModels.length})
-                    </div>
-                    {listedModels.map(m => (
-                      <button
-                        key={m.id}
-                        onClick={() => handleModelSwitch(m.id)}
-                        className={`w-full flex items-center justify-between px-2.5 py-2 text-left text-[9.5px] hover:bg-white/[0.04] ${
-                          openrouterModel === m.id ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'
-                        }`}
-                      >
-                        <div className="flex-1 min-w-0 pr-2">
-                          <div className="truncate font-semibold text-white">{m.name}</div>
-                          <div className="text-[7.5px] text-slate-400 font-mono truncate">{m.id}</div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="text-[7px] text-emerald-400/80 font-mono hidden sm:inline">
-                            {formatPricePerMillion(m.pricing.prompt)}
-                          </span>
-                          <span className="text-[7.5px] text-slate-500 font-mono">
-                            {(m.context_length / 1000).toFixed(0)}k
-                          </span>
-                          <Star
-                            size={9}
-                            className={favorites.includes(m.id) ? 'fill-[#f59e0b] text-[#f59e0b]' : 'text-slate-600 hover:text-white'}
-                            onClick={(e) => toggleFavorite(m.id, e)}
-                          />
-                        </div>
-                      </button>
-                    ))}
+                    {/* All models — grouped by Free / Premium */}
+                    {freeModels.length > 0 && (
+                      <>
+                        <div className="text-[9px] font-bold text-emerald-400/70 uppercase tracking-wider px-2 pt-1.5 pb-0.5">Free Models (Chat only)</div>
+                        {freeModels.map(m => (
+                          <button key={m.id} onClick={() => handleModelSwitch(m.id)}
+                            className={`w-full text-left px-2 py-1 text-[11px] rounded hover:bg-white/[0.04] flex items-center justify-between gap-1 ${openrouterModel === m.id ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'}`}
+                            title="Free tier: Chat only">
+                            <span className="truncate">{m.name || m.id}</span>
+                            <span className="text-[8px] text-emerald-400/60 shrink-0">FREE</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {premiumModels.length > 0 && (
+                      <>
+                        <div className="text-[9px] font-bold text-amber-400/70 uppercase tracking-wider px-2 pt-1.5 pb-0.5">Premium Models (Agent, Automation, Adv AI)</div>
+                        {premiumModels.map(m => (
+                          <button key={m.id} onClick={() => handleModelSwitch(m.id)}
+                            className={`w-full text-left px-2 py-1 text-[11px] rounded hover:bg-white/[0.04] flex items-center justify-between gap-1 ${openrouterModel === m.id ? 'text-[#a855f7] bg-white/[0.02]' : 'text-slate-300'}`}
+                            title="Premium: Agent + Automation + Advanced AI">
+                            <span className="truncate">{m.name || m.id}</span>
+                            <span className="text-[8px] text-amber-400/60 shrink-0">PRO</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
                   </div>
                 </motion.div>
               )}

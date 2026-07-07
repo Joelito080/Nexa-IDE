@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { workspaceEngine } from './workspaceEngine'
 
 interface DiffLine {
   type: 'added' | 'removed' | 'unchanged'
@@ -195,7 +196,7 @@ function findProjectRoot(filePath: string): string | null {
     if (parent === dir) break
     dir = parent
   }
-  return null
+  return workspaceEngine.getRoot() || null
 }
 
 async function deleteBackup(backupPath: string): Promise<boolean> {

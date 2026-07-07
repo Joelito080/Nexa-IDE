@@ -1,6 +1,8 @@
 import './shim'
 import dotenv from 'dotenv'
 import path from 'node:path'
+import fs from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, clipboard } from 'electron'
 import type { UpdateInfo, ProgressInfo } from 'electron-updater'
 
@@ -18,6 +20,11 @@ try {
     path.resolve(process.cwd(), '.env'), // working directory
     path.resolve(__dirname, '../../.env'), // one level above app.asar
   ]
+  try {
+    candidates.push(path.join(app.getPath('userData'), '.env'))
+  } catch (e) {
+    // app.getPath might fail if called too early in some platforms
+  }
   for (const p of candidates) {
     if (fs.existsSync && fs.existsSync(p)) {
       dotenv.config({ path: p, override: true })
@@ -40,8 +47,6 @@ if (app.isPackaged) {
   console.log('[Electron] AutoUpdater disabled in dev mode')
 }
 import log from 'electron-log'
-import fs from 'node:fs'
-import fsPromises from 'node:fs/promises'
 import os from 'node:os'
 import { execSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -58,6 +63,8 @@ import {
   checkOpenRouterConnection,
   getBudgetStatus,
   isOpenRouterKeyConfigured,
+  calculateAiActionCost,
+  startNewAiSession,
 } from './aiService'
 import { AgentExecutor } from '../src/ai/agent/freeAgentMode'
 import {
@@ -104,9 +111,15 @@ import {
   canUseAI,
   canCreateTemplate,
   canInstallExtension,
+  checkPremiumCredits,
+  consumeCredits,
+  getCreditBalance,
   recordAIRequest,
   recordTemplateUsage,
   recordExtensionInstall,
+  reserveCredits,
+  commitReservedCredits,
+  releaseReservedCredits,
   LicenseStatus,
 } from './licenseService'
 
@@ -215,6 +228,25 @@ interface LastCrashEntry {
   suggestedSafeMode?: string[]
 }
 
+function cleanupStaleCrashFiles() {
+  try {
+    const crashDir = path.join(app.getPath('userData'), 'logs')
+    if (fs.existsSync(crashDir)) {
+      const files = fs.readdirSync(crashDir)
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+      for (const file of files) {
+        const filePath = path.join(crashDir, file)
+        const stats = fs.statSync(filePath)
+        if (stats.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath)
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to cleanup stale crash files:', err)
+  }
+}
+
 function readCrashHistorySync(): LastCrashEntry[] {
   try {
     const historyPath = getCrashHistoryPath()
@@ -222,7 +254,22 @@ function readCrashHistorySync(): LastCrashEntry[] {
     const raw = fs.readFileSync(historyPath, 'utf-8')
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.slice(0, 10).map((entry) => entry ?? {}) as LastCrashEntry[]
+    
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const filtered = parsed.filter((entry) => {
+      if (!entry || !entry.timestamp) return false
+      try {
+        return new Date(entry.timestamp).getTime() > cutoff
+      } catch {
+        return false
+      }
+    })
+
+    if (filtered.length !== parsed.length) {
+      fs.writeFileSync(historyPath, JSON.stringify(filtered.slice(0, 10), null, 2), 'utf-8')
+    }
+
+    return filtered.slice(0, 10).map((entry) => entry ?? {}) as LastCrashEntry[]
   } catch (err) {
     console.error('Failed to read crash history:', err)
     return []
@@ -398,7 +445,7 @@ const extensionHostService = new ExtensionHostService({
   extensionStorageRoot,
   builtInMarketplaceRoot: marketplaceRoot,
   onExtensionEvent: (channel, payload) => {
-    mainWindow?.webContents.send(channel, payload)
+    safeSendToRenderer(channel, payload)
     if (channel === 'extensionHost:crash') {
       const message = payload && typeof payload === 'object' && 'message' in (payload as any)
         ? (payload as any).message
@@ -453,6 +500,7 @@ app.on('before-quit', () => {
   killAllSessions()
   abortAllStreams() // Cancel any active AI streams on quit
   stopWorkspaceWatcher()
+  memoryManager.stopMonitoring()
 })
 
 process.on('uncaughtException', (err) => {
@@ -522,6 +570,41 @@ let isReadyToQuit = false
 let workspaceWatcher: fs.FSWatcher | null = null
 let watcherDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
+function safeSendToRenderer(channel: string, ...args: any[]) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    try {
+      mainWindow.webContents.send(channel, ...args)
+    } catch (err) {
+      log.warn(`[IPC] Failed to send message on channel ${channel} to renderer:`, err)
+    }
+  }
+}
+
+async function validateWorkspaceFolder(folderPath: string) {
+  try {
+    const stats = await fsPromises.stat(folderPath)
+    if (!stats.isDirectory()) {
+      return { isValid: false, error: 'Path is not a directory' }
+    }
+    // Check read permission and that it's not locked/deleted
+    await fsPromises.access(folderPath, fs.constants.R_OK)
+    await fsPromises.readdir(folderPath)
+    return { isValid: true }
+  } catch (err: any) {
+    log.error(`[Workspace] Validation failed for ${folderPath}:`, err)
+    if (err.code === 'ENOENT') {
+      return { isValid: false, error: 'Folder does not exist or has been deleted' }
+    }
+    if (err.code === 'EACCES') {
+      return { isValid: false, error: 'Permission denied' }
+    }
+    if (err.code === 'EBUSY') {
+      return { isValid: false, error: 'Folder is locked by another process' }
+    }
+    return { isValid: false, error: err.message || 'Invalid folder' }
+  }
+}
+
 function stopWorkspaceWatcher() {
   if (workspaceWatcher) {
     try {
@@ -584,9 +667,7 @@ function setupWorkspaceWatcher(rootPath: string) {
       if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer)
       watcherDebounceTimer = setTimeout(() => {
         log.info(`[Watcher] Workspace changed: ${relPath} (${eventType}). Notifying renderer...`)
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('workspace:changed', { eventType, filename })
-        }
+        safeSendToRenderer('workspace:changed', { eventType, filename })
       }, 300)
     })
   } catch (err) {
@@ -702,7 +783,7 @@ async function createWindow() {
   mainWindow.on('close', (e) => {
     if (isReadyToQuit) return
     e.preventDefault()
-    mainWindow?.webContents.send('app:quit-request')
+    safeSendToRenderer('app:quit-request')
     setTimeout(() => {
       if (!isReadyToQuit) {
         isReadyToQuit = true
@@ -711,18 +792,23 @@ async function createWindow() {
     }, 3000)
   })
 
+  mainWindow.on('closed', () => {
+    abortAllStreams()
+    mainWindow = null
+  })
+
   // Notify renderer when window maximize state changes
   mainWindow.on('maximize', () => {
-    mainWindow?.webContents.send('window:maximized', true)
+    safeSendToRenderer('window:maximized', true)
   })
   mainWindow.on('unmaximize', () => {
-    mainWindow?.webContents.send('window:maximized', false)
+    safeSendToRenderer('window:maximized', false)
   })
   mainWindow.on('enter-full-screen', () => {
-    mainWindow?.webContents.send('window:maximized', true)
+    safeSendToRenderer('window:maximized', true)
   })
   mainWindow.on('leave-full-screen', () => {
-    mainWindow?.webContents.send('window:maximized', false)
+    safeSendToRenderer('window:maximized', false)
   })
 
   // Firebase Google OAuth opens in a child window; other links go to system browser
@@ -943,7 +1029,7 @@ ipcMain.handle('app:isSafeMode', async () => {
 
 ipcMain.handle('app:relaunchNormal', async () => {
   try {
-    const args = process.argv.filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
+    const args = process.argv.slice(1).filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
     if (process.platform === 'win32') {
       app.relaunch({ args })
     } else {
@@ -959,7 +1045,7 @@ ipcMain.handle('app:relaunchNormal', async () => {
 ipcMain.handle('app:relaunchSafe', async () => {
   try {
     // Build args preserving existing args but ensuring --safe flag present
-    const base = process.argv.filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
+    const base = process.argv.slice(1).filter((arg) => arg !== '--safe' && arg !== '--safe-mode')
     const args = [...base, '--safe']
     app.relaunch({ args })
     app.exit(0)
@@ -1244,8 +1330,8 @@ async function collectFilesToTempDir(tempDir: string) {
         })
         // Notify renderer UI and ask it to provide latest snapshot
         try {
-          mainWindow.webContents.send('app:collectingLiveSnapshot')
-          mainWindow.webContents.send('ai:requestLatestSnapshot', reqId)
+          safeSendToRenderer('app:collectingLiveSnapshot')
+          safeSendToRenderer('ai:requestLatestSnapshot', reqId)
           const liveSnap = await liveSnapshotPromise
           if (liveSnap) {
             // Sanitize snapshot to remove secrets
@@ -1949,14 +2035,15 @@ ipcMain.on('preload:executed', () => {
 // ─── IPC: File System ───────────────────────────────────────────────────────
 ipcMain.handle('fs:stat', async (_event, filePath: string) => {
   try {
-    if (filePath.includes('..') || filePath.includes('../') || filePath.includes('..\\')) {
-      return { error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(filePath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, filePath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    const stat = await fsPromises.stat(filePath)
+    const stat = await fsPromises.stat(resolved)
     return {
       size: stat.size,
       isDirectory: stat.isDirectory(),
@@ -1971,14 +2058,15 @@ ipcMain.handle('fs:stat', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:readDir', async (_event, dirPath: string) => {
   try {
-    if (dirPath.includes('..') || dirPath.includes('../') || dirPath.includes('..\\')) {
-      return { error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(dirPath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, dirPath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    const rawEntries = await fsPromises.readdir(dirPath, { withFileTypes: true })
+    const rawEntries = await fsPromises.readdir(resolved, { withFileTypes: true })
 
     const IGNORED_DIRS = new Set([
       'node_modules', '.git', '.nexus', 'dist', 'build', 'coverage', '.next',
@@ -1991,7 +2079,6 @@ ipcMain.handle('fs:readDir', async (_event, dirPath: string) => {
       return true
     })
 
-    // Sort once: directories first, then alphabetical
     const sorted = filteredEntries.sort((a, b) => {
       if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -2009,13 +2096,12 @@ ipcMain.handle('fs:readDir', async (_event, dirPath: string) => {
           isFile: entry.isFile(),
         })
       }
-      // Yield to event loop between chunks so large directories don't freeze the UI
       if (i + CHUNK < sorted.length) {
         await new Promise<void>((resolve) => setImmediate(resolve))
       }
     }
 
-    log.info(`[Workspace] Successfully loaded ${result.length} items from ${dirPath}`)
+    log.info(`[Workspace] Successfully loaded ${result.length} items from ${resolved}`)
     return result
   } catch (err) {
     log.error(`[Workspace] Failed to read directory ${dirPath}:`, err)
@@ -2041,22 +2127,21 @@ memoryManager.register('fs:fileCache', fileCache)
 ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
   console.log("Reading file:", filePath)
   try {
-    const normalized = path.normalize(filePath)
-    if (normalized.includes('..') || filePath.includes('..') || filePath.includes('../') || filePath.includes('..\\')) {
-      return { success: false, error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(filePath, wsRoot)) {
+    if (!wsRoot) {
+      return { success: false, error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, filePath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { success: false, error: 'Access denied: path is outside the workspace' }
     }
 
-    const cached = fileCache.get(normalized)
-    // Stale-while-revalidate: trust recent cache entries without stat syscall
+    const cached = fileCache.get(resolved)
     if (cached && Date.now() - cached.loadedAt < CACHE_TRUST_MS) {
       return { success: true, content: cached.content }
     }
 
-    const stat = await fsPromises.stat(normalized)
+    const stat = await fsPromises.stat(resolved)
 
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
       cached.loadedAt = Date.now()
@@ -2064,7 +2149,7 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
     }
 
     if (stat.size > FILE_SIZE_LIMIT) {
-      const fd = await fsPromises.open(normalized, 'r')
+      const fd = await fsPromises.open(resolved, 'r')
       const buf = Buffer.alloc(FILE_SIZE_LIMIT)
       const { bytesRead } = await fd.read(buf, 0, FILE_SIZE_LIMIT, 0)
       await fd.close()
@@ -2072,9 +2157,9 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
       return { success: true, content: preview, truncated: true, totalSize: stat.size }
     }
 
-    const content = await fsPromises.readFile(normalized, 'utf-8')
+    const content = await fsPromises.readFile(resolved, 'utf-8')
 
-    fileCache.set(normalized, { content, mtimeMs: stat.mtimeMs, size: stat.size, loadedAt: Date.now() })
+    fileCache.set(resolved, { content, mtimeMs: stat.mtimeMs, size: stat.size, loadedAt: Date.now() })
 
     return { success: true, content }
   } catch (err) {
@@ -2085,13 +2170,17 @@ ipcMain.handle('fs:readFile', async (_event, filePath: string) => {
 ipcMain.handle('fs:readFileChunk', async (_event, filePath: string, offset: number, length: number) => {
   try {
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(filePath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, filePath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    const stat = await fsPromises.stat(filePath)
+    const stat = await fsPromises.stat(resolved)
     const actualLength = Math.min(length, stat.size - offset)
     if (actualLength <= 0) return { content: '', eof: true }
-    const fd = await fsPromises.open(filePath, 'r')
+    const fd = await fsPromises.open(resolved, 'r')
     const buf = Buffer.alloc(actualLength)
     const { bytesRead } = await fd.read(buf, 0, actualLength, offset)
     await fd.close()
@@ -2105,18 +2194,19 @@ ipcMain.handle('fs:readFileChunk', async (_event, filePath: string, offset: numb
 
 ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string) => {
   try {
-    if (filePath.includes('..') || filePath.includes('../') || filePath.includes('..\\')) {
-      return { error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(filePath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, filePath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    const tempPath = `${filePath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    const tempPath = `${resolved}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
     try {
       await fsPromises.writeFile(tempPath, content, 'utf-8')
-      await fsPromises.rename(tempPath, filePath)
-      fileCache.delete(filePath)
+      await fsPromises.rename(tempPath, resolved)
+      fileCache.delete(resolved)
       return { success: true }
     } catch (err) {
       try {
@@ -2131,15 +2221,16 @@ ipcMain.handle('fs:writeFile', async (_event, filePath: string, content: string)
 
 ipcMain.handle('fs:createFile', async (_event, filePath: string) => {
   try {
-    if (filePath.includes('..') || filePath.includes('../') || filePath.includes('..\\')) {
-      return { error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(filePath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, filePath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    await fsPromises.mkdir(path.dirname(filePath), { recursive: true })
-    await fsPromises.writeFile(filePath, '', 'utf-8')
+    await fsPromises.mkdir(path.dirname(resolved), { recursive: true })
+    await fsPromises.writeFile(resolved, '', 'utf-8')
     return { success: true }
   } catch (err) {
     return { error: (err as Error).message }
@@ -2148,14 +2239,15 @@ ipcMain.handle('fs:createFile', async (_event, filePath: string) => {
 
 ipcMain.handle('fs:createFolder', async (_event, folderPath: string) => {
   try {
-    if (folderPath.includes('..') || folderPath.includes('../') || folderPath.includes('..\\')) {
-      return { error: 'Access denied: path traversal detected' }
-    }
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(folderPath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, folderPath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    await fsPromises.mkdir(folderPath, { recursive: true })
+    await fsPromises.mkdir(resolved, { recursive: true })
     return { success: true }
   } catch (err) {
     return { error: (err as Error).message }
@@ -2207,12 +2299,15 @@ ipcMain.handle('external:open', async (_event, url: string) => {
 ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => {
   try {
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot) {
-      if (!isPathInsideWorkspace(oldPath, wsRoot) || !isPathInsideWorkspace(newPath, wsRoot)) {
-        return { error: 'Access denied: path is outside the workspace' }
-      }
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
     }
-    await fsPromises.rename(oldPath, newPath)
+    const resolvedOld = path.resolve(wsRoot, oldPath)
+    const resolvedNew = path.resolve(wsRoot, newPath)
+    if (!isPathInsideWorkspace(resolvedOld, wsRoot) || !isPathInsideWorkspace(resolvedNew, wsRoot)) {
+      return { error: 'Access denied: path is outside the workspace' }
+    }
+    await fsPromises.rename(resolvedOld, resolvedNew)
     return { success: true }
   } catch (err) {
     return { error: (err as Error).message }
@@ -2222,14 +2317,18 @@ ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => 
 ipcMain.handle('fs:delete', async (_event, targetPath: string) => {
   try {
     const wsRoot = workspaceEngine.getRoot()
-    if (wsRoot && !isPathInsideWorkspace(targetPath, wsRoot)) {
+    if (!wsRoot) {
+      return { error: 'Access denied: no workspace is open' }
+    }
+    const resolved = path.resolve(wsRoot, targetPath)
+    if (!isPathInsideWorkspace(resolved, wsRoot)) {
       return { error: 'Access denied: path is outside the workspace' }
     }
-    const stat = await fsPromises.stat(targetPath)
+    const stat = await fsPromises.stat(resolved)
     if (stat.isDirectory()) {
-      await fsPromises.rm(targetPath, { recursive: true, force: true })
+      await fsPromises.rm(resolved, { recursive: true, force: true })
     } else {
-      await fsPromises.unlink(targetPath)
+      await fsPromises.unlink(resolved)
     }
     return { success: true }
   } catch (err) {
@@ -2274,11 +2373,20 @@ ipcMain.handle('workspace:mount', async (_event, rootPath: string | null) => {
     memoryService.setStoragePath(userDataPath, rootPath)
     await memoryService.load(rootPath)
     await workspaceEngine.loadFileTree()
-    setupWorkspaceWatcher(rootPath)
   } else {
     stopWorkspaceWatcher()
   }
   return workspaceEngine.getSnapshot()
+})
+
+ipcMain.handle('workspace:validate', async (_event, folderPath: string) => {
+  return validateWorkspaceFolder(folderPath)
+})
+
+ipcMain.on('workspace:explorer-rendered', (_event, rootPath: string) => {
+  if (isSafeMode) return
+  log.info(`[Watcher] Explorer rendered, setting up workspace watcher for: ${rootPath}`)
+  setupWorkspaceWatcher(rootPath)
 })
 
 ipcMain.handle('workspace:snapshot', async () => {
@@ -3132,6 +3240,46 @@ ipcMain.handle('license:recordExtensionInstall', async () => {
   return recordExtensionInstall()
 })
 
+ipcMain.handle('license:getCreditBalance', async () => {
+  try {
+    return await getCreditBalance()
+  } catch (err) {
+    return { balance: 0, tier: 'free' }
+  }
+})
+
+ipcMain.handle('license:checkPremiumCredits', async (_event, cost: number) => {
+  try {
+    return await checkPremiumCredits(cost)
+  } catch (err) {
+    return { allowed: false, balance: 0, cost }
+  }
+})
+
+ipcMain.handle('license:consumeCredits', async (_event, cost: number) => {
+  try {
+    return await consumeCredits(cost)
+  } catch (err) {
+    return { success: false, balance: 0 }
+  }
+})
+
+ipcMain.handle('license:reserveCredits', async (_event, reservationId: string, cost: number) => {
+  try {
+    return await reserveCredits(reservationId, cost)
+  } catch (err) {
+    return { success: false, balance: 0 }
+  }
+})
+
+ipcMain.handle('license:releaseReservedCredits', async (_event, reservationId: string) => {
+  try {
+    return await releaseReservedCredits(reservationId)
+  } catch (err) {
+    return { balance: 0 }
+  }
+})
+
 ipcMain.handle('premium:addPromptEntry', async (_event, projectPath: string, prompt: string, response: string) => {
   return promptHistoryService.addEntry(projectPath, prompt, response)
 })
@@ -3205,13 +3353,49 @@ ${fileContent.slice(0, 5000)}`)
 // Session-managed: each stream gets a unique streamId.
 // Chunks are relayed to renderer via webContents.send.
 // Streams can be cancelled via ai:stream:stop and are auto-cancelled on quit.
+// ─── AI Stream Rate Limiter (Main Process) ───────────────────────────────────
+const ipcRateMap = new Map<string, number>() // senderId -> last request timestamp
+
 ipcMain.handle('ai:stream:start', async (event, payload: any) => {
   const {
     prompt, model, projectPath,
-    streamId, systemPrompt, temperature, maxTokens, topP
+    streamId, systemPrompt, temperature, maxTokens, topP,
+    attachedFilesCount, sessionId,
+    activeFilePath, activeFileContent, selectedCode,
+    cursorLine, cursorColumn
   } = payload
 
   if (!streamId) return { error: 'streamId is required' }
+
+  // ── Server-side rate limit (1 req/sec per window) ──────────────────────────
+  const senderId = String(event.sender.id)
+  const now = Date.now()
+  const last = ipcRateMap.get(senderId) ?? 0
+  if (now - last < 1000) {
+    return { error: 'Rate limit: please wait before sending another request.', rateLimited: true }
+  }
+  ipcRateMap.set(senderId, now)
+
+  // ── Session tracker reset ──────────────────────────────────────────────────
+  if (sessionId) startNewAiSession(sessionId)
+
+  // ── Core cost enforcement (authoritative, not UI) ──────────────────────────
+  const isFreeModel = (model || '').endsWith(':free')
+  let cost = 0
+  if (!isFreeModel) {
+    cost = calculateAiActionCost(prompt || '', attachedFilesCount ?? 0, (prompt || '').length)
+    if (cost > 0) {
+      const reservation = await reserveCredits(streamId, cost)
+      if (!reservation.success) {
+        return {
+          error: `Insufficient credits. This action requires ${cost} credits (balance: ${reservation.balance}).`,
+          insufficientCredits: true,
+          required: cost,
+          balance: reservation.balance,
+        }
+      }
+    }
+  }
 
   const safeSend = (channel: string, data: any) => {
     try {
@@ -3219,29 +3403,111 @@ ipcMain.handle('ai:stream:start', async (event, payload: any) => {
     } catch { /* window may close mid-stream */ }
   }
 
+  // ── Fetch dynamic context fields ──────────────────────────────────────────
+  let licenseTier = 'Free'
+  try {
+    const licenseStatus = await getLicenseStatus()
+    licenseTier = licenseStatus?.plan || 'Free'
+  } catch {}
+
+  let extensionsList: string[] = []
+  try {
+    const list = await extensionHostService.listInstalledExtensions()
+    extensionsList = list.filter(e => e.enabled).map(e => `${e.name} (v${e.version})`)
+  } catch {}
+
+  let terminalStatus = 'No active sessions'
+  try {
+    const { listSessions } = await import('./terminalService')
+    const sessions = listSessions()
+    if (sessions.length > 0) {
+      terminalStatus = `${sessions.length} active terminal session(s)`
+    }
+  } catch {}
+
+  let recentDiagnostics = 'No errors detected'
+  try {
+    const { getLastValidationSummary } = await import('./agent/validationEngine')
+    const diag = getLastValidationSummary()
+    if (diag) recentDiagnostics = diag
+  } catch {}
+
   // Do NOT await — return immediately so IPC doesn't block.
   // The stream pushes events back via safeSend.
   askAIStream(
     prompt,
-    { model, systemPrompt, temperature, maxTokens, topP },
     {
-      onChunk:  (text: string)     => safeSend('ai:stream:chunk', { streamId, text }),
-      onDone:   async (fullText: string, metrics: any) => {
+      model,
+      systemPrompt,
+      temperature,
+      maxTokens,
+      topP,
+      projectPath,
+      activeFilePath,
+      activeFileContent,
+      selectedCode,
+      cursorLine,
+      cursorColumn,
+      licenseTier,
+      isSafeMode,
+      extensions: extensionsList,
+      terminalStatus,
+      recentDiagnostics,
+    },
+    {
+      onChunk: (text: string) => safeSend('ai:stream:chunk', { streamId, text }),
+      onDone: async (fullText: string, metrics: any) => {
+        // Commit reservation (credits were already deducted at reserve time)
+        if (cost > 0) await commitReservedCredits(streamId)
+        
+        // Auto-execute tools if any are found in the response (Project Generator / Assistant Mode)
+        if (projectPath && fullText) {
+          try {
+            const { parseToolCalls, executeTool } = await import('./agent/toolHandlers')
+            const toolCalls = parseToolCalls(fullText)
+            if (toolCalls.length > 0) {
+              const ctx = {
+                workspaceRoot: projectPath,
+                cwd: projectPath,
+              }
+              for (const call of toolCalls) {
+                // Auto-execute only safe file write/edit/delete/folder actions
+                if (['write_file', 'create_folder', 'delete_file', 'edit_file'].includes(call.tool)) {
+                  await executeTool(call.tool, call.args, ctx)
+                }
+              }
+              // Notify renderer that the workspace changed to reload explorer tree
+              safeSend('workspace:changed', { rootPath: projectPath })
+            }
+          } catch (e) {
+            log.error('[AI Stream] Failed to auto-execute tools:', e)
+          }
+        }
+
         safeSend('ai:stream:end', { streamId, fullText, metrics })
         if (projectPath && fullText) {
           try { await promptHistoryService.addEntry(projectPath, prompt, fullText) } catch { /* non-critical */ }
         }
       },
-      onError:  (error: string)    => safeSend('ai:stream:error', { streamId, error }),
+      onError: async (error: string) => {
+        // Release credits back on failure
+        if (cost > 0) await releaseReservedCredits(streamId)
+        safeSend('ai:stream:error', { streamId, error })
+      },
     },
     streamId
-  ).catch((err) => safeSend('ai:stream:error', { streamId, error: (err as Error).message }))
+  ).catch(async (err) => {
+    if (cost > 0) await releaseReservedCredits(streamId)
+    safeSend('ai:stream:error', { streamId, error: (err as Error).message })
+  })
 
   return { started: true, streamId }
 })
 
-ipcMain.handle('ai:stream:stop', (_event, streamId: string) => {
+ipcMain.handle('ai:stream:stop', async (_event, streamId: string) => {
   const cancelled = abortStream(streamId)
+  // Release any reserved credits if the user cancelled before completion
+  if (cancelled) await releaseReservedCredits(streamId).catch(() => {})
   return { cancelled, streamId }
 })
 
@@ -3264,6 +3530,77 @@ ipcMain.handle('ai:getBudget', async () => {
 
 ipcMain.handle('ai:isKeyConfigured', () => {
   return { configured: getOpenRouterKey().length > 0, fromEnv: Boolean(process.env.OPENROUTER_API_KEY?.trim()) }
+})
+
+ipcMain.handle('ai:contextInspectorData', async (_event, payload: any) => {
+  const root = workspaceEngine.getRoot()
+  if (!root) {
+    return {
+      projectName: 'None',
+      framework: 'None',
+      packageManager: 'None',
+      activeModel: 'None',
+      workspaceRoot: 'None',
+      activeFile: 'None',
+      openFiles: [],
+      retrievedFiles: [],
+      tokenCount: 0,
+      contextSize: 0,
+      fallbackModel: 'None',
+      searchResults: []
+    }
+  }
+
+  try {
+    const snapshot = await workspaceEngine.getSnapshot()
+    const { getLastRetrievedFiles } = require('./aiService')
+    const retrievedFiles = getLastRetrievedFiles() as string[]
+    const activeModel = payload?.model || 'deepseek/deepseek-chat:free'
+    const fsSync = require('node:fs')
+    
+    let totalChars = 0
+    for (const f of retrievedFiles) {
+      try {
+        const fullPath = path.isAbsolute(f) ? f : path.join(root, f)
+        const stats = fsSync.statSync(fullPath)
+        totalChars += stats.size
+      } catch {}
+    }
+    
+    const tokenCount = Math.round(totalChars / 4) + 1200
+    const contextSize = tokenCount + 4096
+
+    return {
+      projectName: path.basename(root),
+      framework: snapshot.detectedType || 'Vanilla / None',
+      packageManager: snapshot.packageManager || 'None',
+      activeModel,
+      workspaceRoot: root,
+      activeFile: snapshot.openFiles[0] ? path.relative(root, snapshot.openFiles[0]) : 'None',
+      openFiles: snapshot.openFiles.map(f => path.relative(root, f)),
+      retrievedFiles,
+      tokenCount,
+      contextSize,
+      fallbackModel: 'qwen/qwen-2.5-coder:free',
+      searchResults: retrievedFiles.map(f => `Match: ${f}`)
+    }
+  } catch (err) {
+    log.error('[main] Failed to fetch context inspector data:', err)
+    return {
+      projectName: 'Error',
+      framework: 'Error',
+      packageManager: 'Error',
+      activeModel: 'Error',
+      workspaceRoot: root,
+      activeFile: 'None',
+      openFiles: [],
+      retrievedFiles: [],
+      tokenCount: 0,
+      contextSize: 0,
+      fallbackModel: 'None',
+      searchResults: []
+    }
+  }
 })
 
 // ─── IPC: Project Actions ───────────────────────────────────────────────────
@@ -3416,20 +3753,20 @@ if (autoUpdater) {
   autoUpdater.on('checking-for-update', () => log.info('AutoUpdater: checking for update'));
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     log.info('AutoUpdater: update available', info)
-    mainWindow?.webContents.send('updater:updateAvailable', info)
+    safeSendToRenderer('updater:updateAvailable', info)
   });
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     log.info('AutoUpdater: update not available', info)
-    mainWindow?.webContents.send('updater:updateNotAvailable', info)
+    safeSendToRenderer('updater:updateNotAvailable', info)
   });
   autoUpdater.on('error', (err: Error) => {
     log.error('AutoUpdater error', err)
-    mainWindow?.webContents.send('updater:error', err)
+    safeSendToRenderer('updater:error', err)
   });
   autoUpdater.on('download-progress', (progress: ProgressInfo) => log.info('AutoUpdater download progress', progress));
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
     log.info('AutoUpdater: update downloaded', info)
-    mainWindow?.webContents.send('updater:updateDownloaded', info)
+    safeSendToRenderer('updater:updateDownloaded', info)
     autoUpdater.quitAndInstall()
   });
 }
@@ -3498,6 +3835,7 @@ app.whenReady().then(async () => {
 
     log.info('[Electron] startup diagnostics', diagnostics)
     console.log('[Electron] startup diagnostics', diagnostics)
+    cleanupStaleCrashFiles()
     if (!oauthConfigured) {
       log.warn('[Electron] Google OAuth is not fully configured. GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is missing.')
       try {
