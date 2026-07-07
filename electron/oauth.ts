@@ -75,6 +75,7 @@ export async function handleGoogleOAuth(): Promise<any> {
     console.log('OAuth: Auth window opened')
 
     const code: string = await new Promise<string>((resolve, reject) => {
+      // SECURITY FIX: Reduced from 5 minutes (300000ms) to 60 seconds (60000ms)
       const timeout = setTimeout(() => {
         server.close()
         authWindow.close()
@@ -82,7 +83,7 @@ export async function handleGoogleOAuth(): Promise<any> {
         // eslint-disable-next-line no-console
         console.error('OAuth:', err)
         reject(new Error(err))
-      }, 5 * 60 * 1000)
+      }, 60 * 1000)
 
       server.on('request', (req, res) => {
         try {
