@@ -8,6 +8,7 @@ import {
   Sliders, SlidersHorizontal, Scale, ShieldAlert, Cpu
 } from 'lucide-react'
 import { useAppStore, buildAiSessionKey, getAiSessionState, DEFAULT_AI_SESSION_STATE } from '../../store/appStore'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import AIHealthPanel from './AIHealthPanel'
 import { calculatePromptBudget, buildTokenBudgetedPrompt, PromptSection } from '../../lib/aiTokenBudget'
 import { useAppModal } from '../ui/ModalDialog'
@@ -540,6 +541,7 @@ export default function NexusAssistant() {
   const selectorRef = useRef<HTMLDivElement>(null)
   const streamingMsgIdRef = useRef<string | null>(null)
   const queryStartTimeRef = useRef<number | null>(null)
+  const wasEmptyWorkspaceRef = useRef(false)
   const [autoScroll, setAutoScroll] = useState(true)
 
   // Restore per-model session when switching models
@@ -666,7 +668,7 @@ export default function NexusAssistant() {
             ...last, 
             content: fullText, 
             isStreaming: false, 
-            actionChips: ['Refine', 'Explain More', 'Apply'],
+            actionChips: wasEmptyWorkspaceRef.current ? ['Refine', 'Explain More'] : ['Refine', 'Explain More', 'Apply'],
             timingMs: duration,
             metrics: metrics || {
               inputTokens: Math.ceil(last.content.length / 4),
@@ -1174,6 +1176,9 @@ export default function NexusAssistant() {
       console.warn('[AI Payload] Monaco editor state query failed:', e)
     }
 
+    const isEmptyWorkspace = !rootPath || useWorkspaceStore.getState().fileTree.length === 0
+    wasEmptyWorkspaceRef.current = isEmptyWorkspace
+
     const payload = {
       streamId,
       prompt: builtPrompt,
@@ -1190,6 +1195,7 @@ export default function NexusAssistant() {
       selectedCode,
       cursorLine,
       cursorColumn,
+      isEmptyWorkspace,
     }
 
     try {

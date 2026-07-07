@@ -860,10 +860,16 @@ export default function AppShell() {
 
   // Listen to file system changes from the main process watcher
   useEffect(() => {
-    if (!rootPath) return
     const unsub = window.electronAPI?.on('workspace:changed', async (event: any) => {
       console.log('[Watcher] Workspace changed, invalidating cache:', event)
-      invalidateDirCache(rootPath)
+      const targetPath = event?.newRootPath || event?.rootPath || rootPath
+      if (targetPath) {
+        invalidateDirCache(targetPath)
+        if (event?.newRootPath && event.newRootPath !== rootPath) {
+          useAppStore.getState().setRootPath(event.newRootPath)
+          useAppStore.getState().setCurrentFolder(event.newRootPath)
+        }
+      }
       try {
         const workspaceApi = window.electronAPI?.workspace
         if (workspaceApi) {
@@ -880,6 +886,24 @@ export default function AppShell() {
       unsub?.()
     }
   }, [rootPath])
+
+  // Listen to programmatically requested file openings
+  useEffect(() => {
+    const unsubOpen = window.electronAPI?.on('editor:open-file', async (payload: any) => {
+      const { filePath } = payload || {}
+      if (filePath) {
+        try {
+          const { openFile } = await import('../../lib/fileSystem')
+          await openFile(filePath)
+        } catch (err) {
+          console.error('[AppShell] Failed to open file:', err)
+        }
+      }
+    })
+    return () => {
+      unsubOpen?.()
+    }
+  }, [])
 
   useEffect(() => {
     const handler = (payload: any) => {

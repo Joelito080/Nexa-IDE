@@ -3362,7 +3362,8 @@ ipcMain.handle('ai:stream:start', async (event, payload: any) => {
     streamId, systemPrompt, temperature, maxTokens, topP,
     attachedFilesCount, sessionId,
     activeFilePath, activeFileContent, selectedCode,
-    cursorLine, cursorColumn
+    cursorLine, cursorColumn,
+    isEmptyWorkspace
   } = payload
 
   if (!streamId) return { error: 'streamId is required' }
@@ -3453,6 +3454,7 @@ ipcMain.handle('ai:stream:start', async (event, payload: any) => {
       extensions: extensionsList,
       terminalStatus,
       recentDiagnostics,
+      isEmptyWorkspace,
     },
     {
       onChunk: (text: string) => safeSend('ai:stream:chunk', { streamId, text }),
@@ -3476,8 +3478,48 @@ ipcMain.handle('ai:stream:start', async (event, payload: any) => {
                   await executeTool(call.tool, call.args, ctx)
                 }
               }
-              // Notify renderer that the workspace changed to reload explorer tree
-              safeSend('workspace:changed', { rootPath: projectPath })
+
+              // Locate generated project root (either root or new subfolder)
+              const fs = require('node:fs')
+              const path = require('node:path')
+              let targetProjectRoot = projectPath
+              const packageJsonAtRoot = path.join(projectPath, 'package.json')
+              if (fs.existsSync(packageJsonAtRoot)) {
+                targetProjectRoot = projectPath
+              } else {
+                try {
+                  const subdirs = fs.readdirSync(projectPath, { withFileTypes: true })
+                    .filter((dirent: any) => dirent.isDirectory())
+                    .map((dirent: any) => dirent.name)
+                  for (const dir of subdirs) {
+                    if (fs.existsSync(path.join(projectPath, dir, 'package.json'))) {
+                      targetProjectRoot = path.join(projectPath, dir)
+                      break
+                    }
+                  }
+                } catch {}
+              }
+
+              if (targetProjectRoot !== projectPath) {
+                // Switch the workspace root to the subfolder!
+                workspaceEngine.setRoot(targetProjectRoot)
+                extensionHostService.setWorkspaceRoot(targetProjectRoot)
+                allowPath(targetProjectRoot)
+                memoryService.setStoragePath(userDataPath, targetProjectRoot)
+                await memoryService.load(targetProjectRoot)
+                await workspaceEngine.loadFileTree()
+                setupWorkspaceWatcher(targetProjectRoot)
+                
+                safeSend('workspace:changed', { newRootPath: targetProjectRoot })
+              } else {
+                safeSend('workspace:changed', { rootPath: projectPath })
+              }
+
+              // Focus package.json inside the target project root
+              const targetPackageJson = path.join(targetProjectRoot, 'package.json')
+              if (fs.existsSync(targetPackageJson)) {
+                safeSend('editor:open-file', { filePath: targetPackageJson })
+              }
             }
           } catch (e) {
             log.error('[AI Stream] Failed to auto-execute tools:', e)

@@ -82,6 +82,7 @@ export interface AIRequestOptions {
   extensions?: string[]
   terminalStatus?: string
   recentDiagnostics?: string
+  isEmptyWorkspace?: boolean
 }
 
 export interface StreamCallbacks {
@@ -652,7 +653,35 @@ export async function askAIStream(
     }
 
     const originalSysPrompt = options.systemPrompt || NEXA_SYSTEM_PROMPT
-    options.systemPrompt = `${originalSysPrompt}\n\n${workspaceContext}\n\n${projectContext}`
+    let extraScaffoldingPrompt = ''
+    if (options.isEmptyWorkspace) {
+      extraScaffoldingPrompt = `
+[CRITICAL INSTRUCTION FOR EMPTY WORKSPACE]
+The workspace is currently empty (isEmptyWorkspace = true).
+Since the workspace is empty, if the user asks to build or create a website or project (e.g. "Build me a barber shop website"):
+1. You MUST automatically scaffold a complete React + Vite + TypeScript project.
+2. Create a subfolder for the project named after the project (e.g. "barber-shop" if they ask for a barber shop website).
+3. Do NOT output package.json, vite.config.ts, tsconfig.json, or any other configuration/code files in standard markdown code blocks in the chat response.
+4. Instead, write them ONLY inside \`\`\`tool blocks (or [TOOL:...] inline blocks) so that the backend can execute them automatically.
+5. In the chat response text, only provide a brief, natural language confirmation of what you created, like "I created a React + Vite barber shop website in your workspace." Do NOT print raw JSON, config file contents, or tool tags in the final text.
+6. Generate all required boilerplate:
+   - package.json
+   - vite.config.ts
+   - tsconfig.json
+   - tsconfig.node.json
+   - index.html
+   - src/main.tsx
+   - src/App.tsx
+   - src/index.css
+   - src/components/
+   - src/pages/
+   - src/assets/
+   - public/
+   - README.md
+7. Make sure all tool calls are complete and correct.
+`
+    }
+    options.systemPrompt = `${originalSysPrompt}\n\n${workspaceContext}\n\n${projectContext}\n\n${extraScaffoldingPrompt}`
   } catch (err) {
     log.error('[AI Service] Failed to inject context:', err)
   }
