@@ -10,103 +10,14 @@ try {
   // ignore
 }
 
-// ─── Type Definitions ────────────────────────────────────────────────────────
+// ─── Type Definitions ───────────────────────────────────────────────────────
 // (mirrored in src/types/electron.d.ts for renderer TypeScript types)
 
 type MaximizeCallback = (isMaximized: boolean) => void
 
-// ─── Direct File System Access (non-sandboxed) ────────────────────────────
-// When sandbox is disabled (dev mode), we read files directly in the preload
-// context, eliminating the IPC roundtrip + structured-clone copy of file
-// content strings. In sandboxed production mode we fall back to IPC.
-
-type FileReadResult = { content: string } | { error: string }
-
-const STREAM_CHUNK_SIZE = 65536 // 64 KB
-
-function createDirectFileReader() {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const nodeFS = require('node:fs') as typeof import('fs')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const nodeFSPromises = require('node:fs/promises') as typeof import('fs/promises')
-    const { Buffer } = require('node:buffer') as typeof import('buffer')
-
-    return {
-      readFile: async (filePath: string): Promise<any> => {
-        try {
-          const content = await nodeFSPromises.readFile(filePath, 'utf-8')
-          return { success: true, content }
-        } catch (err) {
-          return { success: false, error: (err as Error).message }
-        }
-      },
-
-      readFileRange: async (filePath: string, offset: number, length: number): Promise<{ content: string; eof: boolean } | { error: string }> => {
-        try {
-          const handle = await nodeFSPromises.open(filePath, 'r')
-          const buf = Buffer.alloc(length)
-          const { bytesRead } = await handle.read(buf, 0, length, offset)
-          await handle.close()
-          const content = buf.toString('utf-8', 0, bytesRead)
-          return { content, eof: bytesRead < length }
-        } catch (err) {
-          return { error: (err as Error).message }
-        }
-      },
-
-      readFileStream: (filePath: string, callbacks: {
-        onChunk: (chunk: string, progress: number) => void
-        onDone: (fullContent: string) => void
-        onError: (error: string) => void
-      }): (() => void) => {
-        const chunks: string[] = []
-        let totalSize = 0
-
-        try {
-          const stream = nodeFS.createReadStream(filePath, {
-            encoding: 'utf-8',
-            highWaterMark: STREAM_CHUNK_SIZE,
-          })
-
-          stream.on('data', (chunk: string | Buffer) => {
-            const str = typeof chunk === 'string' ? chunk : chunk.toString('utf-8')
-            chunks.push(str)
-            totalSize += Buffer.byteLength(str, 'utf-8')
-            callbacks.onChunk(str, totalSize)
-          })
-
-          stream.on('end', () => {
-            const fullContent = chunks.join('')
-            callbacks.onDone(fullContent)
-          })
-
-          stream.on('error', (err: Error) => {
-            callbacks.onError(err.message)
-          })
-
-          return () => stream.destroy()
-        } catch (err) {
-          callbacks.onError((err as Error).message)
-          return () => {}
-        }
-      },
-    }
-  } catch {
-    return null
-  }
-}
-
-const directReader = createDirectFileReader()
-
 contextBridge.exposeInMainWorld('electron', {
   fs: {
-    readFile: (filePath: string) => {
-      console.log("Invoking readFile:", filePath)
-      return directReader
-        ? directReader.readFile(filePath)
-        : ipcRenderer.invoke('fs:readFile', filePath)
-    },
+    readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
     writeFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
     readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
   },
@@ -115,7 +26,7 @@ contextBridge.exposeInMainWorld('electron', {
 })
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // ── Window Controls ────────────────────────────────────────────────────────
+  // ── Window Controls ──────────────────────────────────────────────────────
   window: {
     minimize: () =>
       ipcRenderer.send('window:minimize'),
@@ -150,22 +61,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.send('app:ready-to-quit'),
   },
 
-  // ── File System ─────────────────────────────────────────────────────────────
-    // Non-sandboxed (dev): reads happen directly in preload via `node:fs`,
-    // avoiding IPC roundtrip and eliminating one full structured-clone copy.
-    // Sandboxed (production): falls back to IPC `invoke` calls.
+  // ── File System ──────────────────────────────────────────────────────────
+  // All file operations routed through IPC with full validation
   fs: {
     stat:      (filePath: string)                    => ipcRenderer.invoke('fs:stat',     filePath),
     readDir:   (dirPath: string)                    => ipcRenderer.invoke('fs:readDir',   dirPath),
-    readFile:  (filePath: string)                   => {
-      console.log("Invoking readFile:", filePath);
-      return directReader
-        ? directReader.readFile(filePath)
-        : ipcRenderer.invoke('fs:readFile', filePath);
-    },
-    readFileRange: (filePath: string, offset: number, length: number) => directReader
-      ? directReader.readFileRange(filePath, offset, length)
-      : ipcRenderer.invoke('fs:readFileChunk', filePath, offset, length),
+    readFile:  (filePath: string)                   => ipcRenderer.invoke('fs:readFile', filePath),
+    readFileRange: (filePath: string, offset: number, length: number) => ipcRenderer.invoke('fs:readFileChunk', filePath, offset, length),
     readFileStream: (
       filePath: string,
       callbacks: {
@@ -174,12 +76,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         onError: (error: string) => void
       },
     ): (() => void) => {
-      if (directReader) {
-        return directReader.readFileStream(filePath, callbacks)
-      }
-      // Sandboxed fallback: single chunk via IPC (still avoids monolithic
-      // main-process handler overhead; chunked IPC streaming can be added
-      // alongside fs:readFileChunk when the main process handler is extended)
+      // Sandboxed streaming: single chunk via IPC
       ipcRenderer.invoke('fs:readFile', filePath).then((result: any) => {
         if (result && !('error' in result)) {
           callbacks.onChunk(result.content, result.content.length)
@@ -195,7 +92,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     writeFile: (filePath: string, content: string)  => ipcRenderer.invoke('fs:writeFile', filePath, content),
   },
 
-  // ── AI — non-streaming + real SSE streaming ──────────────────────────────────
+  // ── AI — non-streaming + real SSE streaming ────────────────────────────
   ai: {
     /** Non-streaming single-shot chat request. */
     chat: (payload: unknown) => ipcRenderer.invoke('ai:chat', payload),
@@ -203,9 +100,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getLastCrash: (): Promise<any> => ipcRenderer.invoke('app:getLastCrash'),
 
     /** Start a real streaming request.
-    getCrashLog: (): Promise<any> => ipcRenderer.invoke('app:getCrashLog'),
-    getAILog: (): Promise<any> => ipcRenderer.invoke('app:getAILog'),
-    clearDiagnostics: (): Promise<any> => ipcRenderer.invoke('app:clearDiagnostics'),
      *  Returns { started: true, streamId } immediately.
      *  Chunks arrive via onChunk / onEnd / onError listeners. */
     streamStart: (payload: unknown) => ipcRenderer.invoke('ai:stream:start', payload),
@@ -245,8 +139,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     isKeyConfigured: () => ipcRenderer.invoke('ai:isKeyConfigured'),
   },
 
-
-  // ── Extension System ───────────────────────────────────────────────────────
+  // ── Extension System ──────────────────────────────────────────────────
   extension: {
     listInstalled: () => ipcRenderer.invoke('extension:listInstalled'),
     listMarketplace: (query?: string) => ipcRenderer.invoke('extension:listMarketplace', query),
@@ -257,11 +150,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: (extensionId: string) => ipcRenderer.invoke('extension:uninstall', extensionId),
     listCommands: () => ipcRenderer.invoke('extension:listCommands'),
     runCommand: (commandId: string, ...args: unknown[]) => ipcRenderer.invoke('extension:runCommand', commandId, ...args),
-      checkForUpdates: () => ipcRenderer.invoke('extension:checkForUpdates'),
-      updateExtension: (extensionId: string) => ipcRenderer.invoke('extension:updateExtension', extensionId),
-      updateAllExtensions: () => ipcRenderer.invoke('extension:updateAllExtensions'),
-      clearQuarantine: (extensionId: string) => ipcRenderer.invoke('extension:clearQuarantine', extensionId),
-      reloadExtensions: () => ipcRenderer.invoke('extension:reloadExtensions'),
+    checkForUpdates: () => ipcRenderer.invoke('extension:checkForUpdates'),
+    updateExtension: (extensionId: string) => ipcRenderer.invoke('extension:updateExtension', extensionId),
+    updateAllExtensions: () => ipcRenderer.invoke('extension:updateAllExtensions'),
+    clearQuarantine: (extensionId: string) => ipcRenderer.invoke('extension:clearQuarantine', extensionId),
+    reloadExtensions: () => ipcRenderer.invoke('extension:reloadExtensions'),
     clone: (repoUrl: string) => ipcRenderer.invoke('project:clone', repoUrl),
     new: () => ipcRenderer.invoke('project:new'),
   },
@@ -292,7 +185,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeSnippet: (projectPath: string, snippetId: string) => ipcRenderer.invoke('premium:removeSnippet', projectPath, snippetId),
   },
 
-  // ── Auth Session (Phase 2) ─────────────────────────────────────────────────
+  // ── Auth Session ──────────────────────────────────────────────────────
   auth: {
     saveSession: (data: string) =>
       ipcRenderer.invoke('auth:saveSession', data),
@@ -367,6 +260,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     onDone: (callback: (searchId: string, totalResults: number) => void) => {
       const handler = (_: IpcRendererEvent, searchId: string, totalResults: number) =>
+        callback(searchId, totalResults)
       ipcRenderer.on('search:done', handler)
       return () => ipcRenderer.removeListener('search:done', handler)
     },
@@ -396,7 +290,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: (url: string): Promise<boolean> => ipcRenderer.invoke('external:open', url),
   },
 
-  // ── Terminal (node-pty + xterm.js) ───────────────────────────────────────
+  // ── Terminal (node-pty + xterm.js) ────────────────────────────────────
   terminal: {
     create: (cwd: string) => ipcRenderer.invoke('terminal:create', cwd),
     write: (sessionId: string, data: string) => ipcRenderer.invoke('terminal:write', sessionId, data),
